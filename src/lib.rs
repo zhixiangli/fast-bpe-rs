@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Copy)]
 struct Node {
-    id: u32,
+    token_id: u32,
     prev: Option<u32>,
     next: Option<u32>,
 }
@@ -23,7 +23,7 @@ impl Chain {
                 .enumerate()
                 .map(|(i, &b)| {
                     Some(Node {
-                        id: b as u32,
+                        token_id: b as u32,
                         prev: if i > 0 { Some(i as u32 - 1) } else { None },
                         next: if i + 1 < n { Some(i as u32 + 1) } else { None },
                     })
@@ -42,10 +42,12 @@ impl Chain {
         })
     }
 
-    pub fn splice(&mut self, left: u32, right: u32, new_id: u32) -> u32 {
+    /// Replaces the [left, right] pair with a new merged node, returning the new node's position.
+    pub fn splice(&mut self, left: u32, right: u32, new_token_id: u32) -> u32 {
         let prev = self.nodes[left as usize].as_ref().unwrap().prev;
         let next = self.nodes[right as usize].as_ref().unwrap().next;
         let pos = self.nodes.len() as u32;
+
         if let Some(p) = prev {
             self.nodes[p as usize].as_mut().unwrap().next = Some(pos);
         } else {
@@ -54,8 +56,9 @@ impl Chain {
         if let Some(n) = next {
             self.nodes[n as usize].as_mut().unwrap().prev = Some(pos);
         }
+
         self.nodes.push(Some(Node {
-            id: new_id,
+            token_id: new_token_id,
             prev,
             next,
         }));
@@ -67,15 +70,14 @@ impl Chain {
 
 pub struct BPE {
     split_pattern: Regex,
-    vocab: HashMap<u32, Vec<u8>>,        // id  -> bytes
-    merge_map: HashMap<(u32, u32), u32>, // token_ids pair -> merged new token id
+    vocab: HashMap<u32, Vec<u8>>,        // id -> bytes
+    merge_map: HashMap<(u32, u32), u32>, // pair -> merged id
 
     // training-time state
     chains: Vec<Chain>,
-
-    count_to_pairs: BTreeMap<u32, BTreeSet<(u32, u32)>>, // frequency -> token_ids pair
-    pair_counts: HashMap<(u32, u32), u32>,               // token_ids pair -> frequency
-    pair_locs: HashMap<(u32, u32), BTreeSet<(u32, u32)>>,
+    count_to_pairs: BTreeMap<u32, BTreeSet<(u32, u32)>>, // frequency -> pairs
+    pair_counts: HashMap<(u32, u32), u32>,               // pair -> frequency
+    pair_locs: HashMap<(u32, u32), BTreeSet<(usize, u32)>>, // pair -> (chain_idx, node_pos)
 }
 
 impl BPE {
@@ -92,74 +94,153 @@ impl BPE {
         }
     }
 
-    pub fn train<I, S>(&mut self, vocab_size: u32, docs: I)
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    /// Increment (`delta = 1`) or decrement (`delta = -1`) a pair's frequency and location set.
+    fn adjust(&mut self, pair: (u32, u32), seq: usize, pos: u32, delta: i32) {
+        let old = self.pair_counts.get(&pair).copied().unwrap_or(0);
+        let new = (old as i32 + delta) as u32;
+
+        // Remove pair from its old frequency bucket.
+        if old > 0 {
+            let bucket = self.count_to_pairs.get_mut(&old).unwrap();
+            bucket.remove(&pair);
+            if bucket.is_empty() {
+                self.count_to_pairs.remove(&old);
+            }
+        }
+
+        if new == 0 {
+            // Pair has been fully merged away — drop all tracking state.
+            self.pair_counts.remove(&pair);
+            self.pair_locs.remove(&pair);
+        } else {
+            self.pair_counts.insert(pair, new);
+            self.count_to_pairs.entry(new).or_default().insert(pair);
+            let locs = self.pair_locs.entry(pair).or_default();
+            if delta > 0 {
+                locs.insert((seq, pos));
+            } else {
+                locs.remove(&(seq, pos));
+            }
+        }
+    }
+
+    pub fn train(&mut self, vocab_size: u32, docs: impl IntoIterator<Item = impl AsRef<str>>) {
         for doc in docs {
             self.chains.extend(self.split(doc));
         }
 
-        for i in 0..self.chains.len() {
-            // let chain = self.chains[i];
-            // let mut last = None;
-            // for (pos, node) in chain.iter() {
-            // curr = node;
-            // if last is not None {
-            // let pair = (last.id, curr.id);
-            // TODO
-            // increase the frequencies
-            // update the locations
-            // }
-            // last = curr;
-            // }
+        let mut chains = std::mem::take(&mut self.chains);
+
+        // Populate initial pair counts from all chains.
+        for (si, chain) in chains.iter().enumerate() {
+            let nodes: Vec<(u32, Node)> = chain.iter().collect();
+            for window in nodes.windows(2) {
+                let (left_pos, left_node) = window[0];
+                let (_, right_node) = window[1];
+                self.adjust((left_node.token_id, right_node.token_id), si, left_pos, 1);
+            }
         }
 
-        let mut next_id = 256;
-        for _ in 0..vocab_size - 256 {
-            let best_pair = match self.count_to_pairs.iter().next_back() {
-                None => break,
-                Some((_, bucket)) => *bucket.iter().next().unwrap(),
+        // Iteratively merge the most frequent pair until the target vocab size is reached.
+        for merged_id in 256..vocab_size {
+            // Pick the highest-frequency pair (ties broken by BTreeSet ordering).
+            let best = match self
+                .count_to_pairs
+                .iter()
+                .next_back()
+                .and_then(|(_, bucket)| bucket.iter().next())
+                .copied()
+            {
+                Some(p) => p,
+                None => break, // no more pairs to merge
             };
-            // let new_token = FastToken::new({
-            //     token_id: next_id;
-            //     bytes: // merge
-            // });
-            // TODO: replace all best pair with new_token
 
-            next_id += 1;
+            let new_bytes = [
+                self.vocab[&best.0].as_slice(),
+                self.vocab[&best.1].as_slice(),
+            ]
+            .concat();
+            self.vocab.insert(merged_id, new_bytes);
+            self.merge_map.insert(best, merged_id);
+
+            // Collect all locations where this pair appears before mutating chains.
+            let locs: Vec<(usize, u32)> = self
+                .pair_locs
+                .get(&best)
+                .map(|s| s.iter().copied().collect())
+                .unwrap_or_default();
+
+            for (si, left) in locs {
+                // The node may already have been consumed by an earlier splice this round.
+                let left_node = match chains[si].nodes[left as usize] {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let right = match left_node.next {
+                    Some(r) => r,
+                    None => continue,
+                };
+                let right_node = match chains[si].nodes[right as usize] {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if left_node.token_id != best.0 || right_node.token_id != best.1 {
+                    continue;
+                }
+
+                let prev = left_node.prev;
+                let next = right_node.next;
+                let prev_id = prev.map(|p| chains[si].nodes[p as usize].unwrap().token_id);
+                let next_id = next.map(|n| chains[si].nodes[n as usize].unwrap().token_id);
+
+                let new_pos = chains[si].splice(left, right, merged_id);
+
+                // Remove the consumed pair and fix up the pairs that straddle the merge point.
+                self.adjust(best, si, left, -1);
+                if let (Some(pid), Some(p)) = (prev_id, prev) {
+                    self.adjust((pid, best.0), si, p, -1);
+                    self.adjust((pid, merged_id), si, p, 1);
+                }
+                if let Some(nid) = next_id {
+                    self.adjust((best.1, nid), si, right, -1);
+                    self.adjust((merged_id, nid), si, new_pos, 1);
+                }
+            }
         }
+
+        self.chains = chains;
     }
 
     pub fn encode(&self, doc: impl AsRef<str>) -> Vec<u32> {
         let mut chains = self.split(doc);
         let mut encoded = Vec::new();
+
         for chain in &mut chains {
+            // Repeatedly apply the lowest-ranked (earliest) applicable merge.
             loop {
                 let mut best: Option<(u32, u32, u32)> = None; // (merge_id, left_pos, right_pos)
-                let mut prev: Option<(u32, u32)> = None; // (pos, id)
+                let mut prev: Option<(u32, u32)> = None; // (pos, token_id)
 
                 for (pos, node) in chain.iter() {
                     if let Some((prev_pos, prev_id)) = prev {
-                        let pair = (prev_id, node.id);
+                        let pair = (prev_id, node.token_id);
                         if let Some(&merge_id) = self.merge_map.get(&pair) {
                             if best.map_or(true, |(best_id, _, _)| merge_id < best_id) {
                                 best = Some((merge_id, prev_pos, pos));
                             }
                         }
                     }
-                    prev = Some((pos, node.id));
+                    prev = Some((pos, node.token_id));
                 }
 
                 match best {
-                    None => break, // no more mergeable pairs → done
+                    None => break,
                     Some((merge_id, left_pos, right_pos)) => {
                         chain.splice(left_pos, right_pos, merge_id);
                     }
                 }
             }
-            encoded.extend(chain.iter().map(|(_, node)| node.id));
+            encoded.extend(chain.iter().map(|(_, node)| node.token_id));
         }
         encoded
     }
