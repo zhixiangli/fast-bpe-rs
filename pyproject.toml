@@ -1,0 +1,23 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "fast-bpe-rs"
+version = "0.1.0"
+description = "Python bindings for the fast Rust BPE implementation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+]
+
+[tool.maturin]
+module-name = "fast_bpe_rs"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

@@ -58,3 +58,24 @@ This project is a good fit if you want:
 - a faster training approach than naive full rescans.
 
 It is especially useful for people who want to understand the idea without reading a huge tokenizer codebase.
+
+
+## Python usage with uv
+
+This repository now includes Python bindings powered by `pyo3` and `maturin`, so you can call the Rust tokenizer directly from Python.
+
+```bash
+uv sync
+uv run pytest
+```
+
+Example:
+
+```python
+from fast_bpe_rs import BPE
+
+bpe = BPE(r"(?s).+")
+bpe.train(258, ["banana banana"])
+encoded = bpe.encode("banana banana")
+assert bpe.decode_to_string(encoded) == "banana banana"
+```
