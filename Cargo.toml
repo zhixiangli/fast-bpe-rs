@@ -3,5 +3,10 @@ name = "fast-bpe-rs"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "fast_bpe_rs"
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 fancy-regex = "0.17.0"
+pyo3 = { version = "0.23.5", features = ["extension-module"] }

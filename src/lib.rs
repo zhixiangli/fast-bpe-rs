@@ -1,4 +1,6 @@
 use fancy_regex::Regex;
+use pyo3::exceptions::PyUnicodeDecodeError;
+use pyo3::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const BASE_VOCAB_SIZE: u32 = 256;
@@ -307,6 +309,53 @@ impl BPE {
         self.pair_counts.clear();
         self.pair_locs.clear();
     }
+}
+
+#[pyclass(name = "BPE")]
+pub struct PyBPE {
+    inner: BPE,
+}
+
+#[pymethods]
+impl PyBPE {
+    #[new]
+    #[pyo3(signature = (split_pattern))]
+    fn py_new(split_pattern: &str) -> Self {
+        Self {
+            inner: BPE::new(split_pattern),
+        }
+    }
+
+    fn train(&mut self, vocab_size: TokenId, docs: Vec<String>) {
+        self.inner
+            .train(vocab_size, docs.iter().map(String::as_str));
+    }
+
+    fn encode(&self, doc: &str) -> Vec<TokenId> {
+        self.inner.encode(doc)
+    }
+
+    fn decode(&self, token_ids: Vec<TokenId>) -> Vec<u8> {
+        self.inner.decode(token_ids)
+    }
+
+    fn decode_to_string<'py>(
+        &self,
+        py: Python<'py>,
+        token_ids: Vec<TokenId>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let bytes = self.inner.decode(token_ids);
+        match String::from_utf8(bytes) {
+            Ok(text) => Ok(text.into_pyobject(py)?.into_any()),
+            Err(err) => Err(PyUnicodeDecodeError::new_err(err.to_string())),
+        }
+    }
+}
+
+#[pymodule]
+fn fast_bpe_rs(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyBPE>()?;
+    Ok(())
 }
 
 #[cfg(test)]
