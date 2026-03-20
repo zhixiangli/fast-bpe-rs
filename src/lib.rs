@@ -224,10 +224,10 @@ impl BPE {
                 for (pos, node) in chain.iter() {
                     if let Some((prev_pos, prev_id)) = prev {
                         let pair = (prev_id, node.token_id);
-                        if let Some(&merge_id) = self.merge_map.get(&pair) {
-                            if best.map_or(true, |(best_id, _, _)| merge_id < best_id) {
-                                best = Some((merge_id, prev_pos, pos));
-                            }
+                        if let Some(&merge_id) = self.merge_map.get(&pair)
+                            && best.is_none_or(|(best_id, _, _)| merge_id < best_id)
+                        {
+                            best = Some((merge_id, prev_pos, pos));
                         }
                     }
                     prev = Some((pos, node.token_id));
