@@ -1,0 +1,37 @@
+repos:
+  - repo: local
+    hooks:
+      - id: rust-cargo-fmt
+        name: "rust: cargo fmt --check"
+        entry: cargo fmt --all --check
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: rust-cargo-check
+        name: "rust: cargo check"
+        entry: cargo check --all-targets --all-features
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: rust-cargo-build
+        name: "rust: cargo build"
+        entry: cargo build --all-targets --all-features
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: rust-cargo-clippy
+        name: "rust: cargo clippy"
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: rust-cargo-test
+        name: "rust: cargo test"
+        entry: cargo test --all-features
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
