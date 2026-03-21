@@ -20,7 +20,7 @@ impl PyBPE {
     ) -> PyResult<Self> {
         let inner =
             BPE::try_new_with_special_tokens(split_pattern, special_tokens.unwrap_or_default())
-                .map_err(|err| PyValueError::new_err(format!("invalid split regex: {err}")))?;
+                .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -76,6 +76,19 @@ mod tests {
                 err.to_string().contains("invalid split regex"),
                 "unexpected error message: {err}"
             );
+        });
+    }
+
+    #[test]
+    fn py_new_returns_value_error_for_invalid_special_token_ids() {
+        let err = match PyBPE::py_new("(?s).+", Some(HashMap::from([("<pad>".to_owned(), 42)]))) {
+            Ok(_) => panic!("special token ids in the base vocabulary should fail"),
+            Err(err) => err,
+        };
+        prepare_python();
+        Python::attach(|py| {
+            assert!(err.is_instance_of::<PyValueError>(py));
+            assert!(err.to_string().contains("must be >= 256"));
         });
     }
 

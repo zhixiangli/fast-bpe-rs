@@ -1,7 +1,38 @@
 use crate::chain::Chain;
 use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, TokenId};
 use fancy_regex::{Regex, escape};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
+
+#[derive(Debug)]
+pub enum BPEError {
+    InvalidSplitRegex(fancy_regex::Error),
+    SpecialTokenIdOverlapsBaseVocab { token: String, token_id: TokenId },
+    DuplicateSpecialTokenId { token_id: TokenId },
+}
+
+impl fmt::Display for BPEError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidSplitRegex(err) => write!(f, "invalid split regex: {err}"),
+            Self::SpecialTokenIdOverlapsBaseVocab { token, token_id } => write!(
+                f,
+                "special token {token:?} uses reserved token id {token_id}; special token ids must be >= {BASE_VOCAB_SIZE}"
+            ),
+            Self::DuplicateSpecialTokenId { token_id } => {
+                write!(f, "special token id {token_id} is assigned more than once")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BPEError {}
+
+impl From<fancy_regex::Error> for BPEError {
+    fn from(value: fancy_regex::Error) -> Self {
+        Self::InvalidSplitRegex(value)
+    }
+}
 
 #[derive(Debug)]
 pub struct BPE {
@@ -31,22 +62,29 @@ impl BPE {
             .expect("invalid split regex or special token configuration")
     }
 
-    pub fn try_new(split_pattern: impl AsRef<str>) -> Result<Self, fancy_regex::Error> {
+    pub fn try_new(split_pattern: impl AsRef<str>) -> Result<Self, BPEError> {
         Self::try_new_with_special_tokens(split_pattern, std::iter::empty::<(String, TokenId)>())
     }
 
     pub fn try_new_with_special_tokens(
         split_pattern: impl AsRef<str>,
         special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
-    ) -> Result<Self, fancy_regex::Error> {
-        let split_pattern = Regex::new(split_pattern.as_ref())?;
+    ) -> Result<Self, BPEError> {
+        let split_pattern = Regex::new(split_pattern.as_ref()).map_err(BPEError::from)?;
         let mut vocab: HashMap<TokenId, Vec<u8>> = (0..BASE_VOCAB_SIZE)
             .map(|byte| (byte, vec![byte as u8]))
             .collect();
         let mut special_token_map = HashMap::new();
+        let mut used_special_ids = HashSet::new();
 
         for (token, token_id) in special_tokens {
             let token = token.into();
+            if token_id < BASE_VOCAB_SIZE {
+                return Err(BPEError::SpecialTokenIdOverlapsBaseVocab { token, token_id });
+            }
+            if !used_special_ids.insert(token_id) {
+                return Err(BPEError::DuplicateSpecialTokenId { token_id });
+            }
             vocab.insert(token_id, token.as_bytes().to_vec());
             special_token_map.insert(token, token_id);
         }
@@ -54,7 +92,8 @@ impl BPE {
         let special_split_pattern = Self::build_special_token_pattern(&special_token_map)
             .as_deref()
             .map(Regex::new)
-            .transpose()?;
+            .transpose()
+            .map_err(BPEError::from)?;
 
         Ok(Self {
             split_pattern,
@@ -411,6 +450,30 @@ mod tests {
         assert_eq!(bpe.merge_map.get(&(b'b' as u32, b'a' as u32)), Some(&257));
         assert_eq!(bpe.merge_map.get(&(256, 257)), Some(&258));
         assert_eq!(bpe.encode("abba"), vec![258]);
+    }
+
+    #[test]
+    fn try_new_with_special_tokens_rejects_ids_in_base_vocab() {
+        let err = BPE::try_new_with_special_tokens("(?s).+", [("<pad>", 42)])
+            .expect_err("special token ids below the byte vocabulary should be rejected");
+
+        assert!(matches!(
+            err,
+            BPEError::SpecialTokenIdOverlapsBaseVocab { token_id: 42, .. }
+        ));
+        assert!(err.to_string().contains("must be >= 256"));
+    }
+
+    #[test]
+    fn try_new_with_special_tokens_rejects_duplicate_ids() {
+        let err = BPE::try_new_with_special_tokens("(?s).+", [("<pad>", 512), ("<eos>", 512)])
+            .expect_err("duplicate special token ids should be rejected");
+
+        assert!(matches!(
+            err,
+            BPEError::DuplicateSpecialTokenId { token_id: 512 }
+        ));
+        assert!(err.to_string().contains("assigned more than once"));
     }
 
     #[test]
