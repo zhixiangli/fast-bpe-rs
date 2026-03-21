@@ -325,7 +325,7 @@ pub struct PyBPE {
 impl PyBPE {
     #[new]
     #[pyo3(signature = (split_pattern))]
-    fn py_new(split_pattern: &str) -> PyResult<Self> {
+    fn new(split_pattern: &str) -> PyResult<Self> {
         let inner = BPE::try_new(split_pattern)
             .map_err(|err| PyValueError::new_err(format!("invalid split regex: {err}")))?;
         Ok(Self { inner })
@@ -353,7 +353,11 @@ impl PyBPE {
         let bytes = self.inner.decode(token_ids);
         match String::from_utf8(bytes) {
             Ok(text) => Ok(text.into_pyobject(py)?.into_any()),
-            Err(err) => Err(PyUnicodeDecodeError::new_err(err.to_string())),
+            Err(err) => {
+                let utf8_err = err.utf8_error();
+                let decode_err = PyUnicodeDecodeError::new_utf8(py, err.as_bytes(), utf8_err)?;
+                Err(PyErr::from_value(decode_err.into_any()))
+            }
         }
     }
 }
