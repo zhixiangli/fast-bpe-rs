@@ -1,106 +1,40 @@
 name: Release
 
 on:
-  pull_request:
-    types:
-      - closed
+  push:
     branches:
       - main
-
-permissions:
-  contents: write
-  id-token: write
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  bump-version:
-    name: Bump version and tag release
-    if: github.event.pull_request.merged == true
+  release-please:
+    name: Prepare release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     outputs:
-      sha: ${{ steps.push.outputs.sha }}
-      tag: ${{ steps.bump.outputs.tag }}
-      version: ${{ steps.bump.outputs.version }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      sha: ${{ steps.release.outputs.sha }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
 
     steps:
-      - name: Check out main
-        uses: actions/checkout@v6
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v4
         with:
-          fetch-depth: 0
-          ref: main
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Bump patch version
-        id: bump
-        run: |
-          python <<'PY'
-          from pathlib import Path
-          import re
-
-          cargo_toml = Path("Cargo.toml")
-          cargo_lock = Path("Cargo.lock")
-
-          cargo_text = cargo_toml.read_text()
-          package_version = re.search(
-              r'(?sm)(^\[package\]\n.*?^version = ")(\d+)\.(\d+)\.(\d+)("$)',
-              cargo_text,
-          )
-          if not package_version:
-              raise SystemExit("Could not find package version in Cargo.toml")
-
-          major, minor, patch = map(int, package_version.groups()[1:4])
-          new_version = f"{major}.{minor}.{patch + 1}"
-          cargo_text = (
-              cargo_text[: package_version.start(2)]
-              + new_version
-              + cargo_text[package_version.end(4):]
-          )
-          cargo_toml.write_text(cargo_text)
-
-          lock_text = cargo_lock.read_text()
-          lock_version = re.search(
-              r'(?sm)(\[\[package\]\]\nname = "fast-bpe-rs"\nversion = ")(\d+\.\d+\.\d+)(")',
-              lock_text,
-          )
-          if not lock_version:
-              raise SystemExit("Could not find fast-bpe-rs package version in Cargo.lock")
-
-          lock_text = (
-              lock_text[: lock_version.start(2)]
-              + new_version
-              + lock_text[lock_version.end(2):]
-          )
-          cargo_lock.write_text(lock_text)
-
-          github_output = Path(__import__("os").environ["GITHUB_OUTPUT"])
-          with github_output.open("a", encoding="utf-8") as fh:
-              fh.write(f"version={new_version}\n")
-              fh.write(f"tag=v{new_version}\n")
-          PY
-
-      - name: Commit version bump and push tag
-        id: push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock
-          git commit -m "chore: release v${{ steps.bump.outputs.version }}"
-          git tag "${{ steps.bump.outputs.tag }}"
-          git push origin HEAD:main --follow-tags
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   build-wheels:
     name: Build wheel (${{ matrix.os }})
-    if: github.event.pull_request.merged == true
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ${{ matrix.os }}
-    needs: bump-version
+    needs: release-please
     strategy:
       fail-fast: false
       matrix:
@@ -110,7 +44,7 @@ jobs:
       - name: Check out release commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.bump-version.outputs.sha }}
+          ref: ${{ needs.release-please.outputs.sha }}
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -126,15 +60,15 @@ jobs:
 
   build-sdist:
     name: Build sdist
-    if: github.event.pull_request.merged == true
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
-    needs: bump-version
+    needs: release-please
 
     steps:
       - name: Check out release commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.bump-version.outputs.sha }}
+          ref: ${{ needs.release-please.outputs.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -157,12 +91,15 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    if: github.event.pull_request.merged == true
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     needs:
-      - bump-version
+      - release-please
       - build-wheels
       - build-sdist
+    permissions:
+      contents: write
+      id-token: write
     environment:
       name: pypi
       url: https://pypi.org/p/fast-bpe-rs
@@ -184,9 +121,7 @@ jobs:
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.bump-version.outputs.tag }}
-          files: dist/*
-          generate_release_notes: true
+      - name: Upload release artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" dist/* --clobber
