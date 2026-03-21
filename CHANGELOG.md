@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.1.4...v0.1.5) (2026-03-21)
+
+
+### Bug Fixes
+
+* prevent duplicate release PRs by removing draft release config ([#42](https://github.com/zhixiangli/fast-bpe-rs/issues/42)) ([b5c0987](https://github.com/zhixiangli/fast-bpe-rs/commit/b5c098713c2d156687ad800ba61bd53e1342a489))
+
 ## [0.1.4](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.1.3...v0.1.4) (2026-03-21)
 
 
