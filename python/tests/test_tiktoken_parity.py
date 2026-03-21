@@ -49,7 +49,6 @@ def test_fast_bpe_rs_matches_tiktoken_for_encoding_and_decoding(
 
     assert fast_encoded == tiktoken_encoded
     assert fast_bpe.decode(fast_encoded) == tiktoken_bpe.decode_bytes(tiktoken_encoded)
-    assert (
-        fast_bpe.decode_to_string(fast_encoded)
-        == tiktoken_bpe.decode(tiktoken_encoded)
+    assert fast_bpe.decode_to_string(fast_encoded) == tiktoken_bpe.decode(
+        tiktoken_encoded
     )
