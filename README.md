@@ -2,6 +2,33 @@
 
 A small Rust implementation of **Byte Pair Encoding (BPE)** focused on being **simple, correct, and fast**.
 
+## Install
+
+The project is packaged for PyPI, so consumers can install it directly with pip:
+
+```bash
+pip install fast-bpe-rs
+```
+
+Then import the extension module as:
+
+```python
+from fast_bpe_rs import BPE
+```
+
+If a prebuilt wheel is not available for your platform yet, pip falls back to building from source. In that case you will need a recent Rust toolchain and a Python build environment available locally.
+
+## Quickstart
+
+```python
+from fast_bpe_rs import BPE
+
+bpe = BPE(r"(?s).+")
+bpe.train(258, ["banana banana"])
+encoded = bpe.encode("banana banana")
+assert bpe.decode_to_string(encoded) == "banana banana"
+```
+
 ## What is BPE?
 
 BPE is a way to turn text into reusable pieces called **tokens**.
@@ -59,25 +86,26 @@ This project is a good fit if you want:
 
 It is especially useful for people who want to understand the idea without reading a huge tokenizer codebase.
 
+## Development
 
-## Python usage with uv
-
-This repository now includes Python bindings powered by `pyo3` and `maturin`, so you can call the Rust tokenizer directly from Python.
+This repository uses `uv` for Python tooling and `maturin` for building the PyO3 extension.
 
 ```bash
-uv sync
+uv sync --extra dev
 uv run pre-commit install
 uv run pre-commit run --all-files
+uv run maturin develop --release
 uv run pytest
+cargo test --all-features
 ```
 
-Example:
+## CI/CD and releases
 
-```python
-from fast_bpe_rs import BPE
+The repository includes GitHub Actions for:
 
-bpe = BPE(r"(?s).+")
-bpe.train(258, ["banana banana"])
-encoded = bpe.encode("banana banana")
-assert bpe.decode_to_string(encoded) == "banana banana"
-```
+- validating formatting, linting, tests, and package builds on pull requests and pushes,
+- producing wheels and an sdist for tagged releases,
+- publishing to PyPI with trusted publishing,
+- attaching built artifacts to a GitHub Release.
+
+Maintainer release steps are documented in [`RELEASE.md`](RELEASE.md).
