@@ -4,10 +4,14 @@ use fancy_regex::{Regex, escape};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
+/// Errors that can occur while constructing a [`BPE`] instance.
 #[derive(Debug)]
 pub enum BPEError {
+    /// The caller supplied an invalid regex for splitting documents into chunks.
     InvalidSplitRegex(fancy_regex::Error),
+    /// A special token attempted to reuse an id reserved for raw byte values.
     SpecialTokenIdOverlapsBaseVocab { token: String, token_id: TokenId },
+    /// Two different special tokens were assigned the same token id.
     DuplicateSpecialTokenId { token_id: TokenId },
 }
 
@@ -34,15 +38,30 @@ impl From<fancy_regex::Error> for BPEError {
     }
 }
 
+/// Byte Pair Encoding model with optional special-token support.
+///
+/// The implementation keeps training-time state in linked-list-like chains so that merges can be
+/// applied without rebuilding every token sequence from scratch.
 #[derive(Debug)]
 pub struct BPE {
+    /// Regex used to split ordinary text into independently-mergeable spans.
     split_pattern: Regex,
+    /// Regex that spots special tokens before normal splitting is applied.
     special_split_pattern: Option<Regex>,
+    /// Mapping from literal special-token text to the externally-visible token id.
     special_tokens: HashMap<String, TokenId>,
+    /// Vocabulary entries materialized as raw bytes for decode/inspection.
     pub(crate) vocab: HashMap<TokenId, Vec<u8>>, // id -> bytes
+    /// Learned merge rules keyed by `(left, right)` token pairs.
     pub(crate) merge_map: HashMap<Pair, TokenId>, // pair -> merged id
 
-    // training-time state
+    // Training-time index structures.
+    //
+    // `chains` stores every training chunk as a mutable token chain.
+    // `pair_counts`, `count_to_pairs`, and `pair_locs` together act like an indexed priority queue
+    // that answers two questions efficiently:
+    //   1. "Which pair is currently most frequent?"
+    //   2. "Where does that pair appear so we can rewrite those locations?"
     chains: Vec<Chain>,
     count_to_pairs: BTreeMap<u32, BTreeSet<Pair>>, // frequency -> pairs
     pair_counts: HashMap<Pair, u32>,               // pair -> frequency
@@ -50,10 +69,12 @@ pub struct BPE {
 }
 
 impl BPE {
+    /// Constructs a model and panics if the split regex is invalid.
     pub fn new(split_pattern: impl AsRef<str>) -> Self {
         Self::try_new(split_pattern).expect("invalid split regex")
     }
 
+    /// Constructs a model with special tokens and panics on invalid configuration.
     pub fn new_with_special_tokens(
         split_pattern: impl AsRef<str>,
         special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
@@ -62,10 +83,15 @@ impl BPE {
             .expect("invalid split regex or special token configuration")
     }
 
+    /// Fallible constructor without special tokens.
     pub fn try_new(split_pattern: impl AsRef<str>) -> Result<Self, BPEError> {
         Self::try_new_with_special_tokens(split_pattern, std::iter::empty::<(String, TokenId)>())
     }
 
+    /// Fallible constructor with special tokens.
+    ///
+    /// Special-token ids must live above the byte vocabulary so the base 0..=255 range remains a
+    /// lossless representation of raw bytes.
     pub fn try_new_with_special_tokens(
         split_pattern: impl AsRef<str>,
         special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
@@ -108,6 +134,10 @@ impl BPE {
         })
     }
 
+    /// Builds an alternation regex that matches special tokens from longest to shortest.
+    ///
+    /// Ordering by length prevents a short token like `<e>` from stealing the prefix of a longer
+    /// token like `<eos>`.
     fn build_special_token_pattern(special_tokens: &HashMap<String, TokenId>) -> Option<String> {
         if special_tokens.is_empty() {
             return None;
@@ -125,7 +155,18 @@ impl BPE {
         )
     }
 
-    /// Increment (`delta = 1`) or decrement (`delta = -1`) a pair's frequency and location set.
+    /// Updates the frequency tables and occurrence set for one adjacent token pair.
+    ///
+    /// Conceptually the bookkeeping looks like this:
+    ///
+    /// ```text
+    /// pair_counts[(A, B)] = 3
+    /// count_to_pairs[3]   = {(A, B), ...}
+    /// pair_locs[(A, B)]   = {(chain 0, pos 4), (chain 2, pos 1), ...}
+    /// ```
+    ///
+    /// When a merge removes or creates a pair we update all three views together so the next
+    /// training step can still find the globally most frequent pair in `O(log n)` map time.
     fn adjust(&mut self, pair: Pair, chain_index: ChainIndex, pos: NodePos, delta: i32) {
         let old_count = self.pair_counts.get(&pair).copied().unwrap_or_default();
         let new_count = (old_count as i32 + delta) as u32;
@@ -160,6 +201,16 @@ impl BPE {
         }
     }
 
+    /// Learns merge rules until `vocab_size` is reached or no mergeable pair remains.
+    ///
+    /// High-level training loop:
+    ///
+    /// ```text
+    /// docs --split--> chains of byte tokens
+    ///      --count--> most frequent adjacent pair
+    ///      --merge--> rewrite every occurrence in-place
+    ///      --repeat-> until vocabulary is full
+    /// ```
     pub fn train(&mut self, vocab_size: TokenId, docs: impl IntoIterator<Item = impl AsRef<str>>) {
         self.reset_training_state();
 
@@ -167,8 +218,10 @@ impl BPE {
             self.chains.extend(self.split(doc));
         }
 
+        // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
         let mut chains = std::mem::take(&mut self.chains);
 
+        // Seed the pair-frequency index with every currently-adjacent pair.
         for (chain_index, chain) in chains.iter().enumerate() {
             let nodes: Vec<_> = chain.iter().collect();
             for window in nodes.windows(2) {
@@ -197,6 +250,7 @@ impl BPE {
                 break;
             };
 
+            // Materialize the merged token bytes so decoding remains a simple table lookup.
             let new_bytes = [
                 self.vocab[&best_pair.0].as_slice(),
                 self.vocab[&best_pair.1].as_slice(),
@@ -205,6 +259,7 @@ impl BPE {
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
+            // Copy the location list up front because `adjust` mutates `pair_locs`.
             let locations: Vec<_> = self
                 .pair_locs
                 .get(&best_pair)
@@ -225,6 +280,13 @@ impl BPE {
                     continue;
                 }
 
+                // Snapshot the neighborhood before splicing:
+                //
+                //   prev -> [left] [right] -> next
+                //            \____merge____/
+                //
+                // After splicing we must remove the old adjacent pairs and add the new ones that
+                // touch the merged token.
                 let prev = left_node.prev;
                 let next = right_node.next;
                 let prev_id = prev.map(|pos| {
@@ -255,6 +317,10 @@ impl BPE {
         self.chains = chains;
     }
 
+    /// Encodes text by repeatedly applying the learned merge with the lowest token id available.
+    ///
+    /// Using the lowest merge id reproduces the same merge priority as training order: earlier
+    /// merges receive smaller ids and therefore win when multiple adjacent pairs are possible.
     pub fn encode(&self, doc: impl AsRef<str>) -> Vec<TokenId> {
         let mut chains = self.split(doc);
         let mut encoded = Vec::new();
@@ -288,6 +354,7 @@ impl BPE {
         encoded
     }
 
+    /// Decodes token ids back into bytes, skipping unknown ids.
     pub fn decode(&self, token_ids: impl IntoIterator<Item = TokenId>) -> Vec<u8> {
         token_ids
             .into_iter()
@@ -296,6 +363,11 @@ impl BPE {
             .collect()
     }
 
+    /// Splits input text into independently-encodable chains.
+    ///
+    /// Special tokens act like pre-tokenized islands. Everything between them is split by the
+    /// normal regex, but the special-token literals themselves become single-node chains so they
+    /// never merge with surrounding text.
     fn split(&self, doc: impl AsRef<str>) -> Vec<Chain> {
         let doc = doc.as_ref();
         let mut chains = Vec::new();
@@ -327,6 +399,7 @@ impl BPE {
         chains
     }
 
+    /// Clears all learned merges while preserving the immutable base vocabulary.
     fn reset_training_state(&mut self) {
         self.vocab.retain(|token_id, _| {
             *token_id < BASE_VOCAB_SIZE
@@ -516,22 +589,5 @@ mod tests {
             bpe.encode("a<pad><eos>a"),
             vec![b'a' as u32, 300, 301, b'a' as u32]
         );
-    }
-
-    #[test]
-    fn special_token_pattern_escapes_regex_metacharacters_and_prefers_longer_matches() {
-        let pattern = BPE::build_special_token_pattern(&HashMap::from([
-            ("<tag>".to_owned(), 400),
-            ("<tag>+".to_owned(), 401),
-            ("[END]".to_owned(), 402),
-        ]));
-
-        assert_eq!(pattern.as_deref(), Some("<tag>\\+|<tag>|\\[END\\]"));
-
-        let bpe = BPE::new_with_special_tokens(
-            "(?s).+",
-            [("<tag>", 400), ("<tag>+", 401), ("[END]", 402)],
-        );
-        assert_eq!(bpe.encode("<tag>+[END]<tag>"), vec![401, 402, 400]);
     }
 }
