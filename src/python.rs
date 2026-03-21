@@ -55,7 +55,7 @@ mod tests {
     use pyo3::types::PyString;
 
     fn prepare_python() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
     }
 
     #[test]
@@ -65,7 +65,7 @@ mod tests {
             Err(err) => err,
         };
         prepare_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             assert!(err.is_instance_of::<PyValueError>(py));
             assert!(
                 err.to_string().contains("invalid split regex"),
@@ -82,7 +82,7 @@ mod tests {
         assert_eq!(bpe.encode("abab"), vec![256, 256]);
 
         prepare_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let decoded = bpe.decode(py, vec![256, 256]);
             assert_eq!(decoded.as_bytes(), b"abab");
 
@@ -90,7 +90,7 @@ mod tests {
                 .decode_to_string(py, vec![256, 256])
                 .expect("valid utf-8 should decode to string");
             let py_str = text
-                .downcast::<PyString>()
+                .cast::<PyString>()
                 .expect("decoded text should be a string");
             assert_eq!(
                 py_str.to_str().expect("python string should be utf-8"),
@@ -105,7 +105,7 @@ mod tests {
         bpe.train(257, vec!["éa".to_owned()]);
 
         prepare_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let err = bpe
                 .decode_to_string(py, vec![256, b'a' as u32])
                 .expect_err("invalid utf-8 should raise");
