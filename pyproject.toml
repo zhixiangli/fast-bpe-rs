@@ -4,22 +4,42 @@ build-backend = "maturin"
 
 [project]
 name = "fast-bpe-rs"
-version = "0.1.0"
-description = "Python bindings for the fast Rust BPE implementation"
+dynamic = ["version"]
+description = "Fast Byte Pair Encoding (BPE) tokenizer with Python bindings powered by PyO3."
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "fast-bpe-rs contributors" }]
+keywords = ["bpe", "nlp", "pyo3", "rust", "tokenizer"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Text Processing :: Linguistic",
+]
 dependencies = []
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
+  "maturin>=1.7,<2.0",
   "pre-commit>=4.2",
   "pytest>=8.3",
   "ruff>=0.11.13",
+  "twine>=6.1",
 ]
 
 [tool.maturin]
 module-name = "fast_bpe_rs"
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "pyo3/abi3-py310"]
+sdist-generator = "git"
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
@@ -29,4 +49,3 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
-
