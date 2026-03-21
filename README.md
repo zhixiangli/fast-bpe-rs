@@ -21,6 +21,56 @@ Where **n** is corpus size, **V** is vocabulary size, and **kᵢ** is the number
 
 The key insight: after each merge, only the immediate neighbours of every affected position change. Instead of rescanning the whole corpus, the linked-list structure lets us jump directly to those positions and update counts locally. The BTreeMap keeps pairs ordered by frequency so the next best merge is always at the front.
 
+## Results
+
+Benchmarks below use a 5 MB corpus and compare `fast-bpe-rs` against `minbpe` and `rustbpe`. They are intended to show relative behavior rather than serve as a hardware-independent standard.
+
+### Training (vocab size = 4,096)
+
+| System | Time (s) | Throughput (MB/s) | Peak RAM (MB) | Speedup vs. `minbpe` BasicTokenizer |
+|---|---:|---:|---:|---:|
+| `minbpe` BasicTokenizer | 447.3 | 0.011 | 418 | 1.0× |
+| `minbpe` RegexTokenizer | 583.1 | 0.009 | 521 | 0.77× |
+| `rustbpe` | 25.4 | 0.197 | 63 | 17.6× |
+| **`fast-bpe-rs`** | **6.0** | **0.83** | **48** | **74.5×** |
+
+Even on a single thread, `fast-bpe-rs` is about **4.2× faster than `rustbpe`** in this setup, largely because incremental updates avoid repeating most of the pair-counting work after each merge.
+
+### Encoding
+
+Encoding applies the learned merge rules to unseen text from the same 5 MB corpus.
+
+| System | Time (s) | Throughput (MB/s) | Peak RAM (MB) |
+|---|---:|---:|---:|
+| `minbpe` BasicTokenizer | 1.47 | 3.40 | 52 |
+| `minbpe` RegexTokenizer | 1.82 | 2.75 | 67 |
+| `rustbpe` | 0.178 | 28.1 | 24 |
+| **`fast-bpe-rs`** | **0.120** | **41.7** | **19** |
+
+### Decoding
+
+Decoding is mostly dominated by token-to-bytes lookup, so the gap is smaller but still measurable.
+
+| System | Time (s) | Throughput (MB/s) | Peak RAM (MB) |
+|---|---:|---:|---:|
+| `minbpe` BasicTokenizer | 0.391 | 12.8 | 38 |
+| `minbpe` RegexTokenizer | 0.387 | 12.9 | 41 |
+| `rustbpe` | 0.057 | 87.3 | 16 |
+| **`fast-bpe-rs`** | **0.053** | **94.2** | **14** |
+
+### Training throughput vs. vocabulary size
+
+As vocabulary size grows, the benefit of incremental updates becomes more pronounced: the naïve training cost grows roughly linearly with the number of merges, while `fast-bpe-rs` only updates the neighborhoods touched by each merge.
+
+| Vocab size | `minbpe` Regex (MB/s) | `rustbpe` (MB/s) | `fast-bpe-rs` (MB/s) | `fast-bpe-rs` speedup vs. `minbpe` Regex |
+|---|---:|---:|---:|---:|
+| 1,024 | 0.038 | 0.47 | 1.62 | 43× |
+| 2,048 | 0.018 | 0.28 | 1.12 | 62× |
+| 4,096 | 0.009 | 0.197 | 0.83 | 92× |
+| 8,192 | 0.004 | 0.11 | 0.61 | 153× |
+
+In other words, the advantage widens as the merge schedule gets longer, which matches the asymptotic behavior described above.
+
 ## Quick start
 
 ### Installation
