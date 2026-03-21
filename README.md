@@ -64,10 +64,10 @@ As vocabulary size grows, the benefit of incremental updates becomes more pronou
 
 | Vocab size | `minbpe` Regex (MB/s) | `rustbpe` (MB/s) | `fast-bpe-rs` (MB/s) | `fast-bpe-rs` speedup vs. `minbpe` Regex |
 |---|---:|---:|---:|---:|
-| 1,024 | 0.038 | 0.47 | 1.62 | 43× |
-| 2,048 | 0.018 | 0.28 | 1.12 | 62× |
-| 4,096 | 0.009 | 0.197 | 0.83 | 92× |
-| 8,192 | 0.004 | 0.11 | 0.61 | 153× |
+| 1,024 | 0.038 | 0.47 | 1.62 | **43×** |
+| 2,048 | 0.018 | 0.28 | 1.12 | **62×** |
+| 4,096 | 0.009 | 0.197 | 0.83 | **92×** |
+| 8,192 | 0.004 | 0.11 | 0.61 | **153×** |
 
 In other words, the advantage widens as the merge schedule gets longer, which matches the asymptotic behavior described above.
 
