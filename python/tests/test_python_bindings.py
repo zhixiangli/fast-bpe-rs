@@ -1,3 +1,5 @@
+import pytest
+
 from fast_bpe_rs import BPE
 
 
@@ -18,3 +20,8 @@ def test_python_split_pattern_scopes_merges() -> None:
     bpe.train(257, ["go go", "go stop"])
 
     assert bpe.encode("go stop go") == [256, ord("s"), ord("t"), ord("o"), ord("p"), 256]
+
+
+def test_python_invalid_regex_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="invalid split regex"):
+        BPE(r"(")

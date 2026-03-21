@@ -1,5 +1,5 @@
 use fancy_regex::Regex;
-use pyo3::exceptions::PyUnicodeDecodeError;
+use pyo3::exceptions::{PyUnicodeDecodeError, PyValueError};
 use pyo3::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -112,8 +112,12 @@ pub struct BPE {
 
 impl BPE {
     pub fn new(split_pattern: impl AsRef<str>) -> Self {
-        Self {
-            split_pattern: Regex::new(split_pattern.as_ref()).expect("invalid split regex"),
+        Self::try_new(split_pattern).expect("invalid split regex")
+    }
+
+    pub fn try_new(split_pattern: impl AsRef<str>) -> Result<Self, fancy_regex::Error> {
+        Ok(Self {
+            split_pattern: Regex::new(split_pattern.as_ref())?,
             vocab: (0..BASE_VOCAB_SIZE)
                 .map(|byte| (byte, vec![byte as u8]))
                 .collect(),
@@ -122,7 +126,7 @@ impl BPE {
             count_to_pairs: BTreeMap::new(),
             pair_counts: HashMap::new(),
             pair_locs: HashMap::new(),
-        }
+        })
     }
 
     /// Increment (`delta = 1`) or decrement (`delta = -1`) a pair's frequency and location set.
@@ -320,10 +324,10 @@ pub struct PyBPE {
 impl PyBPE {
     #[new]
     #[pyo3(signature = (split_pattern))]
-    fn py_new(split_pattern: &str) -> Self {
-        Self {
-            inner: BPE::new(split_pattern),
-        }
+    fn py_new(split_pattern: &str) -> PyResult<Self> {
+        let inner = BPE::try_new(split_pattern)
+            .map_err(|err| PyValueError::new_err(format!("invalid split regex: {err}")))?;
+        Ok(Self { inner })
     }
 
     fn train(&mut self, vocab_size: TokenId, docs: Vec<String>) {
@@ -466,5 +470,10 @@ mod tests {
         assert_eq!(bpe.vocab.get(&256), Some(&b"bb".to_vec()));
         assert_eq!(bpe.encode("bbbb"), vec![256, 256]);
         assert_eq!(bpe.encode("aaaa"), vec![b'a' as u32; 4]);
+    }
+
+    #[test]
+    fn try_new_returns_error_for_invalid_regex() {
+        assert!(BPE::try_new("(").is_err());
     }
 }
