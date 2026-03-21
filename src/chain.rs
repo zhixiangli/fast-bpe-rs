@@ -90,3 +90,74 @@ impl Chain {
         pos
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_chain_preserves_byte_order_and_links() {
+        let chain = Chain::new(b"abc");
+        let nodes: Vec<_> = chain.iter().collect();
+
+        assert_eq!(chain.head, Some(0));
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].0, 0);
+        assert_eq!(nodes[0].1.token_id, b'a' as u32);
+        assert_eq!(nodes[0].1.prev, None);
+        assert_eq!(nodes[0].1.next, Some(1));
+        assert_eq!(nodes[1].0, 1);
+        assert_eq!(nodes[1].1.token_id, b'b' as u32);
+        assert_eq!(nodes[1].1.prev, Some(0));
+        assert_eq!(nodes[1].1.next, Some(2));
+        assert_eq!(nodes[2].0, 2);
+        assert_eq!(nodes[2].1.token_id, b'c' as u32);
+        assert_eq!(nodes[2].1.prev, Some(1));
+        assert_eq!(nodes[2].1.next, None);
+    }
+
+    #[test]
+    fn empty_chain_has_no_head_or_nodes() {
+        let chain = Chain::new(b"");
+
+        assert_eq!(chain.head, None);
+        assert!(chain.nodes.is_empty());
+        assert_eq!(chain.iter().count(), 0);
+    }
+
+    #[test]
+    fn splice_updates_links_for_middle_pair() {
+        let mut chain = Chain::new(b"abcd");
+
+        let merged_pos = chain.splice(1, 2, 999);
+        let nodes: Vec<(usize, u32)> = chain
+            .iter()
+            .map(|(pos, node)| (pos, node.token_id))
+            .collect();
+
+        assert_eq!(merged_pos, 4);
+        assert_eq!(nodes, vec![(0, b'a' as u32), (4, 999), (3, b'd' as u32)]);
+        assert_eq!(chain.head, Some(0));
+        assert_eq!(chain.nodes[0].expect("node 0 should exist").next, Some(4));
+        assert_eq!(chain.nodes[3].expect("node 3 should exist").prev, Some(4));
+    }
+
+    #[test]
+    fn splice_updates_head_when_merging_first_pair() {
+        let mut chain = Chain::new(b"abc");
+
+        let merged_pos = chain.splice(0, 1, 777);
+        let nodes: Vec<(usize, u32)> = chain
+            .iter()
+            .map(|(pos, node)| (pos, node.token_id))
+            .collect();
+
+        assert_eq!(merged_pos, 3);
+        assert_eq!(chain.head, Some(3));
+        assert_eq!(nodes, vec![(3, 777), (2, b'c' as u32)]);
+        assert_eq!(
+            chain.nodes[2].expect("tail node should exist").prev,
+            Some(3)
+        );
+    }
+}
