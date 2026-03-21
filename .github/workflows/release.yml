@@ -27,7 +27,6 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       sha: ${{ steps.release.outputs.sha }}
       tag_name: ${{ steps.release.outputs.tag_name }}
-
     steps:
       - name: Run release-please
         id: release
@@ -36,8 +35,8 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  build-wheels:
-    name: Build wheel (${{ matrix.os }})
+  build-distributions:
+    name: Build ${{ matrix.name }}
     if: >-
       !cancelled() && !failure() &&
       ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
@@ -47,58 +46,45 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
+        include:
+          - name: wheel (ubuntu-latest)
+            os: ubuntu-latest
+            artifact_name: wheels-ubuntu-latest
+            command: build
+            args: --release --strip --out dist
+          - name: wheel (macos-latest)
+            os: macos-latest
+            artifact_name: wheels-macos-latest
+            command: build
+            args: --release --strip --out dist
+          - name: wheel (windows-latest)
+            os: windows-latest
+            artifact_name: wheels-windows-latest
+            command: build
+            args: --release --strip --out dist
+          - name: sdist
+            os: ubuntu-latest
+            artifact_name: sdist
+            command: sdist
+            args: --out dist
+    env:
+      RELEASE_REF: ${{ needs.release-please.outputs.sha || inputs.tag_name }}
     steps:
       - name: Check out release commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-please.outputs.sha || inputs.tag_name }}
+          ref: ${{ env.RELEASE_REF }}
 
-      - name: Build wheels
+      - name: Build distribution
         uses: PyO3/maturin-action@v1
         with:
-          command: build
-          args: --release --strip --out dist
+          command: ${{ matrix.command }}
+          args: ${{ matrix.args }}
 
-      - name: Upload wheel artifacts
+      - name: Upload distribution artifact
         uses: actions/upload-artifact@v7
         with:
-          name: wheels-${{ matrix.os }}
-          path: dist
-
-  build-sdist:
-    name: Build sdist
-    if: >-
-      !cancelled() && !failure() &&
-      ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
-      github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    needs: release-please
-
-    steps:
-      - name: Check out release commit
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.release-please.outputs.sha || inputs.tag_name }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Build sdist
-        run: |
-          uv tool install maturin
-          maturin sdist --out dist
-
-      - name: Upload sdist artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: sdist
+          name: ${{ matrix.artifact_name }}
           path: dist
 
   publish:
@@ -110,15 +96,17 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - release-please
-      - build-wheels
-      - build-sdist
+      - build-distributions
     permissions:
       contents: write
       id-token: write
     environment:
       name: pypi
       url: https://pypi.org/p/fast-bpe-rs
-
+    env:
+      TAG_NAME: ${{ needs.release-please.outputs.tag_name || inputs.tag_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Download wheel artifacts
         uses: actions/download-artifact@v8
@@ -138,23 +126,8 @@ jobs:
         with:
           skip-existing: true
 
-      - name: Ensure release is draft (mutable) before uploading
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name || inputs.tag_name }}
-        run: gh release edit "$TAG_NAME" --draft=true
-
-      - name: Upload release artifacts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name || inputs.tag_name }}
-        run: gh release upload "$TAG_NAME" dist/* --clobber
-
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name || inputs.tag_name }}
-        run: gh release edit "$TAG_NAME" --draft=false
+      - name: Publish GitHub release artifacts
+        run: |
+          gh release edit "$TAG_NAME" --draft=true
+          gh release upload "$TAG_NAME" dist/* --clobber
+          gh release edit "$TAG_NAME" --draft=false
