@@ -1,3 +1,5 @@
+//! Crate entry point for the Rust library and Python extension module.
+
 mod bpe;
 mod chain;
 mod python;
@@ -8,6 +10,7 @@ pub use crate::python::PyBPE;
 
 use pyo3::prelude::*;
 
+/// Registers the `fast_bpe_rs` Python module and exposes the `BPE` class.
 #[pymodule]
 fn fast_bpe_rs(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyBPE>()?;
@@ -18,6 +21,7 @@ fn fast_bpe_rs(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
 
+    /// Ensures the embedded Python interpreter is initialized before using PyO3 APIs.
     fn prepare_python() {
         Python::initialize();
     }

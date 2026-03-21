@@ -5,13 +5,16 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::collections::HashMap;
 
+/// Thin PyO3 wrapper that exposes [`BPE`] to Python callers.
 #[pyclass(name = "BPE")]
 pub struct PyBPE {
+    /// Pure-Rust implementation that does the actual work.
     inner: BPE,
 }
 
 #[pymethods]
 impl PyBPE {
+    /// Creates a Python-facing BPE model and translates construction errors into `ValueError`.
     #[new]
     #[pyo3(signature = (split_pattern, special_tokens=None))]
     fn py_new(
@@ -24,20 +27,24 @@ impl PyBPE {
         Ok(Self { inner })
     }
 
+    /// Trains the model in place from a list of Python strings.
     fn train(&mut self, vocab_size: TokenId, docs: Vec<String>) {
         self.inner
             .train(vocab_size, docs.iter().map(String::as_str));
     }
 
+    /// Encodes a string into token ids.
     fn encode(&self, doc: &str) -> Vec<TokenId> {
         self.inner.encode(doc)
     }
 
+    /// Decodes token ids into raw Python `bytes`.
     fn decode<'py>(&self, py: Python<'py>, token_ids: Vec<TokenId>) -> Bound<'py, PyBytes> {
         let bytes = self.inner.decode(token_ids);
         PyBytes::new(py, &bytes)
     }
 
+    /// Decodes token ids into a Python `str`, surfacing UTF-8 errors when bytes are invalid text.
     fn decode_to_string<'py>(
         &self,
         py: Python<'py>,
@@ -59,6 +66,7 @@ mod tests {
     use super::*;
     use pyo3::types::PyString;
 
+    /// Ensures the embedded Python interpreter is initialized before using PyO3 APIs.
     fn prepare_python() {
         Python::initialize();
     }

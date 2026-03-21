@@ -1,19 +1,40 @@
 use crate::types::{NodePos, TokenId};
 
+/// One token inside a [`Chain`].
+///
+/// The `prev`/`next` links let us remove a merged pair in `O(1)` without shifting the backing
+/// vector.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Node {
+    /// Token currently stored at this position.
     pub(crate) token_id: TokenId,
+    /// Index of the previous live node, if any.
     pub(crate) prev: Option<NodePos>,
+    /// Index of the next live node, if any.
     pub(crate) next: Option<NodePos>,
 }
 
+/// Sparse linked list stored inside a grow-only `Vec`.
+///
+/// Visual model:
+///
+/// ```text
+/// nodes vec:  [0] <-> [1] <-> [2] <-> [3]
+/// merge 1,2:  [0]     x     x    [3] <-> [4]
+/// head --------------------------------^ or stays at 0
+/// ```
+///
+/// Removed nodes are replaced with `None`, while new merged nodes are appended at the end.
 #[derive(Debug)]
 pub(crate) struct Chain {
+    /// Slots for both live nodes and tombstones from earlier merges.
     pub(crate) nodes: Vec<Option<Node>>,
+    /// Index of the first live node in the linked structure.
     pub(crate) head: Option<NodePos>,
 }
 
 impl Chain {
+    /// Creates a chain containing exactly one pre-tokenized token.
     pub(crate) fn from_token_id(token_id: TokenId) -> Self {
         Self {
             nodes: vec![Some(Node {
@@ -25,6 +46,7 @@ impl Chain {
         }
     }
 
+    /// Creates a byte-level chain where each input byte becomes one node.
     pub(crate) fn new(bytes: &[u8]) -> Self {
         let len = bytes.len();
         let nodes = bytes
@@ -46,6 +68,7 @@ impl Chain {
         }
     }
 
+    /// Iterates over live nodes in linked-list order.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (NodePos, Node)> + '_ {
         let mut current = self.head;
         std::iter::from_fn(move || {
@@ -56,7 +79,20 @@ impl Chain {
         })
     }
 
-    /// Replaces the `[left, right]` pair with a new merged node, returning the new node's position.
+    /// Replaces an adjacent `[left, right]` pair with a newly-appended merged node.
+    ///
+    /// Before:
+    ///
+    /// ```text
+    /// prev <-> left <-> right <-> next
+    /// ```
+    ///
+    /// After:
+    ///
+    /// ```text
+    /// prev <-> merged <-> next
+    ///          ^ appended at the end of `nodes`
+    /// ```
     pub(crate) fn splice(
         &mut self,
         left: NodePos,
