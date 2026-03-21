@@ -25,3 +25,17 @@ def test_python_split_pattern_scopes_merges() -> None:
 def test_python_invalid_regex_raises_value_error() -> None:
     with pytest.raises(ValueError, match="invalid split regex"):
         BPE(r"(")
+
+
+def test_python_decode_to_string_invalid_utf8_raises_unicode_decode_error() -> None:
+    bpe = BPE(r"(?s).")
+
+    with pytest.raises(UnicodeDecodeError) as exc_info:
+        bpe.decode_to_string([0xFF])
+
+    err = exc_info.value
+    assert err.encoding == "utf-8"
+    assert err.object == b"\xff"
+    assert err.start == 0
+    assert err.end == 1
+    assert err.reason == "invalid utf-8"
