@@ -12,7 +12,9 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+  "pre-commit>=4.2",
   "pytest>=8.3",
+  "ruff>=0.11.13",
 ]
 
 [tool.maturin]
@@ -21,3 +23,10 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
