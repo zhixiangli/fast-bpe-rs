@@ -40,7 +40,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release edit "${{ steps.release.outputs.tag_name }}" --draft
+        run: |
+          if [ "$(gh api "repos/$GH_REPO/releases/tags/${{ steps.release.outputs.tag_name }}" --jq '.immutable')" = "true" ]; then
+            echo "Release ${{ steps.release.outputs.tag_name }} is immutable; skipping draft edit."
+            exit 0
+          fi
+
+          gh release edit "${{ steps.release.outputs.tag_name }}" --draft
 
   build-distributions:
     name: Build ${{ matrix.name }}
@@ -135,6 +141,11 @@ jobs:
 
       - name: Publish GitHub release artifacts
         run: |
+          if [ "$(gh api "repos/$GH_REPO/releases/tags/$TAG_NAME" --jq '.immutable')" = "true" ]; then
+            echo "Release $TAG_NAME is immutable; skipping GitHub release asset upload."
+            exit 0
+          fi
+
           gh release edit "$TAG_NAME" --draft=true
           gh release upload "$TAG_NAME" dist/* --clobber
           gh release edit "$TAG_NAME" --draft=false
