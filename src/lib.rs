@@ -1,6 +1,7 @@
 use fancy_regex::Regex;
 use pyo3::exceptions::{PyUnicodeDecodeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const BASE_VOCAB_SIZE: u32 = 256;
@@ -339,8 +340,9 @@ impl PyBPE {
         self.inner.encode(doc)
     }
 
-    fn decode(&self, token_ids: Vec<TokenId>) -> Vec<u8> {
-        self.inner.decode(token_ids)
+    fn decode<'py>(&self, py: Python<'py>, token_ids: Vec<TokenId>) -> Bound<'py, PyBytes> {
+        let bytes = self.inner.decode(token_ids);
+        PyBytes::new(py, &bytes)
     }
 
     fn decode_to_string<'py>(
