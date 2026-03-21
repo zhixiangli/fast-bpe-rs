@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 const BASE_VOCAB_SIZE: u32 = 256;
 
 type TokenId = u32;
-type NodePos = u32;
+type NodePos = usize;
 type Pair = (TokenId, TokenId);
 type ChainIndex = usize;
 type PairLocations = BTreeSet<(ChainIndex, NodePos)>;
@@ -32,7 +32,7 @@ impl Chain {
             .iter()
             .enumerate()
             .map(|(index, &byte)| {
-                let pos = index as NodePos;
+                let pos = index;
                 Some(Node {
                     token_id: TokenId::from(byte),
                     prev: pos.checked_sub(1),
@@ -51,7 +51,7 @@ impl Chain {
         let mut current = self.head;
         std::iter::from_fn(move || {
             let pos = current?;
-            let node = self.nodes[pos as usize].expect("chain iterator visited a removed node");
+            let node = self.nodes[pos].expect("chain iterator visited a removed node");
             current = node.next;
             Some((pos, node))
         })
@@ -59,8 +59,8 @@ impl Chain {
 
     /// Replaces the `[left, right]` pair with a new merged node, returning the new node's position.
     fn splice(&mut self, left: NodePos, right: NodePos, new_token_id: TokenId) -> NodePos {
-        let left_node = self.nodes[left as usize].expect("left splice node must exist");
-        let right_node = self.nodes[right as usize].expect("right splice node must exist");
+        let left_node = self.nodes[left].expect("left splice node must exist");
+        let right_node = self.nodes[right].expect("right splice node must exist");
         debug_assert_eq!(
             left_node.next,
             Some(right),
@@ -69,10 +69,10 @@ impl Chain {
 
         let prev = left_node.prev;
         let next = right_node.next;
-        let pos = self.nodes.len() as NodePos;
+        let pos = self.nodes.len();
 
         if let Some(prev_pos) = prev {
-            self.nodes[prev_pos as usize]
+            self.nodes[prev_pos]
                 .as_mut()
                 .expect("previous splice node must exist")
                 .next = Some(pos);
@@ -81,7 +81,7 @@ impl Chain {
         }
 
         if let Some(next_pos) = next {
-            self.nodes[next_pos as usize]
+            self.nodes[next_pos]
                 .as_mut()
                 .expect("next splice node must exist")
                 .prev = Some(pos);
@@ -92,8 +92,8 @@ impl Chain {
             prev,
             next,
         }));
-        self.nodes[left as usize] = None;
-        self.nodes[right as usize] = None;
+        self.nodes[left] = None;
+        self.nodes[right] = None;
         pos
     }
 }
@@ -214,13 +214,13 @@ impl BPE {
                 .unwrap_or_default();
 
             for (chain_index, left_pos) in locations {
-                let Some(left_node) = chains[chain_index].nodes[left_pos as usize] else {
+                let Some(left_node) = chains[chain_index].nodes[left_pos] else {
                     continue;
                 };
                 let Some(right_pos) = left_node.next else {
                     continue;
                 };
-                let Some(right_node) = chains[chain_index].nodes[right_pos as usize] else {
+                let Some(right_node) = chains[chain_index].nodes[right_pos] else {
                     continue;
                 };
                 if (left_node.token_id, right_node.token_id) != best_pair {
@@ -230,12 +230,12 @@ impl BPE {
                 let prev = left_node.prev;
                 let next = right_node.next;
                 let prev_id = prev.map(|pos| {
-                    chains[chain_index].nodes[pos as usize]
+                    chains[chain_index].nodes[pos]
                         .expect("previous node must exist")
                         .token_id
                 });
                 let next_id = next.map(|pos| {
-                    chains[chain_index].nodes[pos as usize]
+                    chains[chain_index].nodes[pos]
                         .expect("next node must exist")
                         .token_id
                 });
@@ -376,7 +376,7 @@ mod tests {
         let mut chain = Chain::new(b"abcd");
 
         let merged_pos = chain.splice(1, 2, 999);
-        let nodes: Vec<(u32, u32)> = chain
+        let nodes: Vec<(usize, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
