@@ -1,111 +1,74 @@
 # fast-bpe-rs
 
-A small Rust implementation of **Byte Pair Encoding (BPE)** focused on being **simple, correct, and fast**.
+A high-performance [Byte Pair Encoding (BPE)](https://en.wikipedia.org/wiki/Byte_pair_encoding) tokenizer written in **Rust**, with Python bindings.
 
-## Install
+## Why this exists
 
-The project is packaged for PyPI, so consumers can install it directly with pip:
+BPE is at the heart of every major LLM today — GPT, LLaMA, Mistral, and friends all use it to convert raw text into the token sequences the model actually sees. **Getting tokenizer training right, and fast, matters.**
+
+The standard Python BPE implementations are correct but slow — training on large corpora becomes a real bottleneck. Existing Rust ports are faster by virtue of the language, but most carry over the same naïve O(n·V) algorithm. This project starts from Rust and rethinks the algorithm itself, using a **doubly-linked list** to represent token chains and a **frequency-indexed BTreeMap** to find the next best merge in O(log V) instead of a full scan.
+
+## Algorithm improvements
+
+| Phase | Naïve BPE | fast-bpe-rs |
+|---|---|---|
+| Per-merge rescan | O(n) | O(kᵢ) — only occurrences of merged pair |
+| Max-pair lookup | O(V) | O(log V) — BTreeMap min |
+| Merge application | O(n) | O(kᵢ) — in-place linked-list edits |
+| **Total training** | **O(n · V)** | **O(Σ kᵢ · log V) ≈ O(n log V)** |
+
+Where **n** is corpus size, **V** is vocabulary size, and **kᵢ** is the number of occurrences of the pair merged at step i.
+
+The key insight: after each merge, only the immediate neighbours of every affected position change. Instead of rescanning the whole corpus, the linked-list structure lets us jump directly to those positions and update counts locally. The BTreeMap keeps pairs ordered by frequency so the next best merge is always at the front.
+
+## Quick start
+
+### Installation
 
 ```bash
 pip install fast-bpe-rs
 ```
 
-Then import the extension module as:
+If no prebuilt wheel exists for your platform, pip will compile from source — you'll need a recent [Rust toolchain](https://rustup.rs) installed.
 
-```python
-from fast_bpe_rs import BPE
-```
-
-If a prebuilt wheel is not available for your platform yet, pip falls back to building from source. In that case you will need a recent Rust toolchain and a Python build environment available locally.
-
-## Quickstart
+### Train
 
 ```python
 from fast_bpe_rs import BPE
 
+# The argument is a regex pattern used to pre-split text into chunks.
+# r"(?s).+" treats the whole input as one chunk (simplest case).
 bpe = BPE(r"(?s).+")
-bpe.train(258, ["banana banana"])
-encoded = bpe.encode("banana banana")
-assert bpe.decode_to_string(encoded) == "banana banana"
+
+# Learn 258 merges on the given corpus
+bpe.train(258, ["low low low low", "lower lower", "newest newest newest"])
 ```
 
-## What is BPE?
+A GPT-style split pattern for real corpora:
 
-BPE is a way to turn text into reusable pieces called **tokens**.
-
-It starts at the byte level, so every character is first treated as raw bytes. Then it repeatedly:
-
-1. finds the pair of neighboring tokens that appears most often,
-2. merges that pair into one new token,
-3. repeats until the vocabulary reaches the target size.
-
-Example:
-
-- Text: `banana banana`
-- Frequent pairs like `a` + `n` or `an` + `a` appear many times.
-- BPE learns merges such as `an`, then maybe `ana`, then larger chunks if they keep repeating.
-
-The result is a tokenizer that keeps common patterns as single tokens while rare text can still fall back to bytes.
-
-## How this implementation works
-
-At a high level, this crate:
-
-- splits input text into chunks using a regex,
-- stores each chunk as a linked chain of token nodes,
-- counts every adjacent token pair,
-- always merges the most frequent pair during training,
-- remembers the learned merges so encoding can replay them later,
-- decodes by expanding token IDs back to their original bytes.
-
-This keeps the code close to the core BPE idea: **count pairs, merge the best one, update the neighbors, repeat**.
-
-## Why this version is much faster
-
-The main speedup comes from **updating only what changed**.
-
-A slower BPE implementation often rescans large parts of the text after every merge. That wastes work because most pairs did not change.
-
-This version is faster because it:
-
-- tracks pair counts incrementally instead of recounting from scratch,
-- stores where each pair appears, so merges can jump directly to affected locations,
-- updates only the local neighbors around each merge,
-- uses linked-node chains so a merge is just a small pointer update, not a full string rebuild,
-- keeps pair frequencies grouped so the next best merge is quick to find.
-
-In simple terms: **instead of rebuilding the world after each merge, it fixes only the tiny part that moved**.
-
-## Who this is for
-
-This project is a good fit if you want:
-
-- a readable BPE implementation in Rust,
-- a compact reference for learning how BPE works,
-- a faster training approach than naive full rescans.
-
-It is especially useful for people who want to understand the idea without reading a huge tokenizer codebase.
-
-## Development
-
-This repository uses `uv` for Python tooling and `maturin` for building the PyO3 extension.
-
-```bash
-uv sync --extra dev
-uv run pre-commit install
-uv run pre-commit run --all-files
-uv run maturin develop --release
-uv run pytest
-cargo test --all-features
+```python
+bpe = BPE(
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+bpe.train(50_000, corpus_lines)
 ```
 
-## CI/CD and releases
+### Encode
 
-The repository includes GitHub Actions for:
+```python
+ids = bpe.encode("low lower newest")
+print(ids)  # e.g. [260, 262, 259, 261, ...]
+```
 
-- validating formatting, linting, tests, and package builds on pull requests and pushes,
-- producing wheels and an sdist for tagged releases,
-- publishing to PyPI with trusted publishing,
-- attaching built artifacts to a GitHub Release.
+### Decode
 
-Maintainer release steps are documented in [`RELEASE.md`](RELEASE.md).
+```python
+text = bpe.decode_to_string(ids)
+print(text)  # "low lower newest"
+```
+
+
+## License
+
+[Apache 2.0](LICENSE)
