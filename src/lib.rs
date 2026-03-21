@@ -347,7 +347,11 @@ impl PyBPE {
         let bytes = self.inner.decode(token_ids);
         match String::from_utf8(bytes) {
             Ok(text) => Ok(text.into_pyobject(py)?.into_any()),
-            Err(err) => Err(PyUnicodeDecodeError::new_err(err.to_string())),
+            Err(err) => {
+                let decode_error =
+                    PyUnicodeDecodeError::new_utf8(py, err.as_bytes(), err.utf8_error())?;
+                Err(decode_error.into())
+            }
         }
     }
 }
@@ -466,5 +470,24 @@ mod tests {
         assert_eq!(bpe.vocab.get(&256), Some(&b"bb".to_vec()));
         assert_eq!(bpe.encode("bbbb"), vec![256, 256]);
         assert_eq!(bpe.encode("aaaa"), vec![b'a' as u32; 4]);
+    }
+
+    #[test]
+    fn decode_to_string_returns_python_unicode_decode_error() {
+        Python::with_gil(|py| {
+            let mut inner = BPE::new("(?s).+");
+            inner.vocab.insert(256, vec![0xff]);
+            let bpe = PyBPE { inner };
+
+            let err = bpe
+                .decode_to_string(py, vec![256])
+                .expect_err("invalid utf-8 should raise a Python UnicodeDecodeError");
+
+            assert!(err.is_instance_of::<PyUnicodeDecodeError>(py));
+            assert_eq!(
+                err.to_string(),
+                "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid utf-8"
+            );
+        });
     }
 }
