@@ -35,6 +35,13 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      - name: Draft the release until artifacts are ready
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "${{ steps.release.outputs.tag_name }}" --draft
+
   build-distributions:
     name: Build ${{ matrix.name }}
     if: >-

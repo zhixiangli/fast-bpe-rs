@@ -4,7 +4,6 @@
   "packages": {
     ".": {
       "package-name": "fast-bpe-rs",
-      "draft": true,
       "force-tag-creation": true,
       "include-component-in-tag": false,
       "changelog-path": "CHANGELOG.md"
