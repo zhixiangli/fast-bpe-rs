@@ -66,6 +66,8 @@ This repository now includes Python bindings powered by `pyo3` and `maturin`, so
 
 ```bash
 uv sync
+uv run pre-commit install
+uv run pre-commit run --all-files
 uv run pytest
 ```
 
