@@ -3,6 +3,7 @@ use crate::types::TokenId;
 use pyo3::exceptions::{PyUnicodeDecodeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use std::collections::HashMap;
 
 #[pyclass(name = "BPE")]
 pub struct PyBPE {
@@ -12,10 +13,14 @@ pub struct PyBPE {
 #[pymethods]
 impl PyBPE {
     #[new]
-    #[pyo3(signature = (split_pattern))]
-    fn py_new(split_pattern: &str) -> PyResult<Self> {
-        let inner = BPE::try_new(split_pattern)
-            .map_err(|err| PyValueError::new_err(format!("invalid split regex: {err}")))?;
+    #[pyo3(signature = (split_pattern, special_tokens=None))]
+    fn py_new(
+        split_pattern: &str,
+        special_tokens: Option<HashMap<String, TokenId>>,
+    ) -> PyResult<Self> {
+        let inner =
+            BPE::try_new_with_special_tokens(split_pattern, special_tokens.unwrap_or_default())
+                .map_err(|err| PyValueError::new_err(format!("invalid split regex: {err}")))?;
         Ok(Self { inner })
     }
 
@@ -60,7 +65,7 @@ mod tests {
 
     #[test]
     fn py_new_returns_value_error_for_invalid_regex() {
-        let err = match PyBPE::py_new("(") {
+        let err = match PyBPE::py_new("(", None) {
             Ok(_) => panic!("invalid regex should fail"),
             Err(err) => err,
         };
@@ -76,7 +81,7 @@ mod tests {
 
     #[test]
     fn python_wrapper_trains_encodes_and_decodes() {
-        let mut bpe = PyBPE::py_new("(?s).+").expect("valid regex should construct");
+        let mut bpe = PyBPE::py_new("(?s).+", None).expect("valid regex should construct");
         bpe.train(257, vec!["abab".to_owned()]);
 
         assert_eq!(bpe.encode("abab"), vec![256, 256]);
@@ -100,8 +105,32 @@ mod tests {
     }
 
     #[test]
+    fn python_wrapper_supports_special_tokens() {
+        let mut bpe = PyBPE::py_new(
+            "(?s).+",
+            Some(HashMap::from([
+                ("<pad>".to_owned(), 600),
+                ("<eos>".to_owned(), 601),
+            ])),
+        )
+        .expect("valid regex should construct");
+        bpe.train(605, vec!["a<pad>a".to_owned()]);
+
+        assert_eq!(
+            bpe.encode("a<pad><eos>a"),
+            vec![b'a' as u32, 600, 601, b'a' as u32]
+        );
+
+        prepare_python();
+        Python::attach(|py| {
+            let decoded = bpe.decode(py, vec![600, 601]);
+            assert_eq!(decoded.as_bytes(), b"<pad><eos>");
+        });
+    }
+
+    #[test]
     fn decode_to_string_surfaces_unicode_decode_errors() {
-        let mut bpe = PyBPE::py_new("(?s).+").expect("valid regex should construct");
+        let mut bpe = PyBPE::py_new("(?s).+", None).expect("valid regex should construct");
         bpe.train(257, vec!["éa".to_owned()]);
 
         prepare_python();

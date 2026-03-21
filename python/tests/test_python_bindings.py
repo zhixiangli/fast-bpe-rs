@@ -28,6 +28,14 @@ def test_python_split_pattern_scopes_merges() -> None:
     ]
 
 
+def test_python_special_tokens_keep_custom_ids_without_merging() -> None:
+    bpe = BPE(r"(?s).+", {"<pad>": 900, "<eos>": 901})
+    bpe.train(905, ["a<pad>a", "<pad><eos><pad>"])
+
+    assert bpe.encode("a<pad><eos>a") == [ord("a"), 900, 901, ord("a")]
+    assert bpe.decode([900, 901]) == b"<pad><eos>"
+
+
 def test_python_invalid_regex_raises_value_error() -> None:
     with pytest.raises(ValueError, match="invalid split regex"):
         BPE(r"(")

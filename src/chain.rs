@@ -14,6 +14,17 @@ pub(crate) struct Chain {
 }
 
 impl Chain {
+    pub(crate) fn from_token_id(token_id: TokenId) -> Self {
+        Self {
+            nodes: vec![Some(Node {
+                token_id,
+                prev: None,
+                next: None,
+            })],
+            head: Some(0),
+        }
+    }
+
     pub(crate) fn new(bytes: &[u8]) -> Self {
         let len = bytes.len();
         let nodes = bytes
