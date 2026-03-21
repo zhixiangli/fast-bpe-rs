@@ -19,13 +19,13 @@ mod tests {
     use super::*;
 
     fn prepare_python() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
     }
 
     #[test]
     fn module_registration_exports_bpe_class() {
         prepare_python();
-        Python::with_gil(|py| -> PyResult<()> {
+        Python::attach(|py| -> PyResult<()> {
             let module = PyModule::new(py, "fast_bpe_rs")?;
             fast_bpe_rs(py, &module)?;
 
