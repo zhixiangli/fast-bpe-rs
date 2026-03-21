@@ -1,11 +1,13 @@
 use crate::chain::Chain;
 use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, TokenId};
-use fancy_regex::Regex;
+use fancy_regex::{Regex, escape};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug)]
 pub struct BPE {
     split_pattern: Regex,
+    special_split_pattern: Option<Regex>,
+    special_tokens: HashMap<String, TokenId>,
     pub(crate) vocab: HashMap<TokenId, Vec<u8>>, // id -> bytes
     pub(crate) merge_map: HashMap<Pair, TokenId>, // pair -> merged id
 
@@ -21,18 +23,67 @@ impl BPE {
         Self::try_new(split_pattern).expect("invalid split regex")
     }
 
+    pub fn new_with_special_tokens(
+        split_pattern: impl AsRef<str>,
+        special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
+    ) -> Self {
+        Self::try_new_with_special_tokens(split_pattern, special_tokens)
+            .expect("invalid split regex or special token configuration")
+    }
+
     pub fn try_new(split_pattern: impl AsRef<str>) -> Result<Self, fancy_regex::Error> {
+        Self::try_new_with_special_tokens(split_pattern, std::iter::empty::<(String, TokenId)>())
+    }
+
+    pub fn try_new_with_special_tokens(
+        split_pattern: impl AsRef<str>,
+        special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
+    ) -> Result<Self, fancy_regex::Error> {
+        let split_pattern = Regex::new(split_pattern.as_ref())?;
+        let mut vocab: HashMap<TokenId, Vec<u8>> = (0..BASE_VOCAB_SIZE)
+            .map(|byte| (byte, vec![byte as u8]))
+            .collect();
+        let mut special_token_map = HashMap::new();
+
+        for (token, token_id) in special_tokens {
+            let token = token.into();
+            vocab.insert(token_id, token.as_bytes().to_vec());
+            special_token_map.insert(token, token_id);
+        }
+
+        let special_split_pattern = Self::build_special_token_pattern(&special_token_map)
+            .as_deref()
+            .map(Regex::new)
+            .transpose()?;
+
         Ok(Self {
-            split_pattern: Regex::new(split_pattern.as_ref())?,
-            vocab: (0..BASE_VOCAB_SIZE)
-                .map(|byte| (byte, vec![byte as u8]))
-                .collect(),
+            split_pattern,
+            special_split_pattern,
+            special_tokens: special_token_map,
+            vocab,
             merge_map: HashMap::new(),
             chains: Vec::new(),
             count_to_pairs: BTreeMap::new(),
             pair_counts: HashMap::new(),
             pair_locs: HashMap::new(),
         })
+    }
+
+    fn build_special_token_pattern(special_tokens: &HashMap<String, TokenId>) -> Option<String> {
+        if special_tokens.is_empty() {
+            return None;
+        }
+
+        let mut special_tokens: Vec<_> = special_tokens.keys().collect();
+        special_tokens
+            .sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+        Some(
+            special_tokens
+                .into_iter()
+                .map(|token| escape(token))
+                .collect::<Vec<_>>()
+                .join("|"),
+        )
     }
 
     /// Increment (`delta = 1`) or decrement (`delta = -1`) a pair's frequency and location set.
@@ -93,7 +144,10 @@ impl BPE {
             }
         }
 
-        for merged_id in BASE_VOCAB_SIZE..vocab_size {
+        let reserved_ids: Vec<_> = self.special_tokens.values().copied().collect();
+        for merged_id in
+            (BASE_VOCAB_SIZE..vocab_size).filter(|token_id| !reserved_ids.contains(token_id))
+        {
             let Some(best_pair) = self
                 .count_to_pairs
                 .iter()
@@ -204,15 +258,44 @@ impl BPE {
     }
 
     fn split(&self, doc: impl AsRef<str>) -> Vec<Chain> {
-        self.split_pattern
-            .find_iter(doc.as_ref())
-            .filter_map(Result::ok)
-            .map(|matched| Chain::new(matched.as_str().as_bytes()))
-            .collect()
+        let doc = doc.as_ref();
+        let mut chains = Vec::new();
+        let mut cursor = 0;
+
+        if let Some(special_split_pattern) = &self.special_split_pattern {
+            for matched in special_split_pattern.find_iter(doc).filter_map(Result::ok) {
+                chains.extend(
+                    self.split_pattern
+                        .find_iter(&doc[cursor..matched.start()])
+                        .filter_map(Result::ok)
+                        .map(|matched| Chain::new(matched.as_str().as_bytes())),
+                );
+
+                if let Some(&token_id) = self.special_tokens.get(matched.as_str()) {
+                    chains.push(Chain::from_token_id(token_id));
+                }
+
+                cursor = matched.end();
+            }
+        }
+
+        chains.extend(
+            self.split_pattern
+                .find_iter(&doc[cursor..])
+                .filter_map(Result::ok)
+                .map(|matched| Chain::new(matched.as_str().as_bytes())),
+        );
+        chains
     }
 
     fn reset_training_state(&mut self) {
-        self.vocab.retain(|token_id, _| *token_id < BASE_VOCAB_SIZE);
+        self.vocab.retain(|token_id, _| {
+            *token_id < BASE_VOCAB_SIZE
+                || self
+                    .special_tokens
+                    .values()
+                    .any(|special_id| special_id == token_id)
+        });
         self.merge_map.clear();
         self.chains.clear();
         self.count_to_pairs.clear();
@@ -333,5 +416,59 @@ mod tests {
     #[test]
     fn try_new_returns_error_for_invalid_regex() {
         assert!(BPE::try_new("(").is_err());
+    }
+
+    #[test]
+    fn special_tokens_keep_custom_ids_and_roundtrip_without_splitting() {
+        let bpe = BPE::new_with_special_tokens("\\S+", [("<pad>", 1024), ("<eos>", 2048)]);
+
+        assert_eq!(
+            bpe.encode("hi<pad><eos>there"),
+            vec![
+                b'h' as u32,
+                b'i' as u32,
+                1024,
+                2048,
+                b't' as u32,
+                b'h' as u32,
+                b'e' as u32,
+                b'r' as u32,
+                b'e' as u32,
+            ]
+        );
+        assert_eq!(bpe.decode([1024, 2048]), b"<pad><eos>");
+    }
+
+    #[test]
+    fn special_tokens_do_not_merge_with_neighbors_or_each_other() {
+        let mut bpe = BPE::new_with_special_tokens("(?s).+", [("<pad>", 300), ("<eos>", 301)]);
+        bpe.train(305, ["a<pad>a<pad>", "<pad><eos><pad>"]);
+
+        assert!(
+            !bpe.merge_map
+                .keys()
+                .any(|pair| pair.0 == 300 || pair.1 == 300 || pair.0 == 301 || pair.1 == 301)
+        );
+        assert_eq!(
+            bpe.encode("a<pad><eos>a"),
+            vec![b'a' as u32, 300, 301, b'a' as u32]
+        );
+    }
+
+    #[test]
+    fn special_token_pattern_escapes_regex_metacharacters_and_prefers_longer_matches() {
+        let pattern = BPE::build_special_token_pattern(&HashMap::from([
+            ("<tag>".to_owned(), 400),
+            ("<tag>+".to_owned(), 401),
+            ("[END]".to_owned(), 402),
+        ]));
+
+        assert_eq!(pattern.as_deref(), Some("<tag>\\+|<tag>|\\[END\\]"));
+
+        let bpe = BPE::new_with_special_tokens(
+            "(?s).+",
+            [("<tag>", 400), ("<tag>+", 401), ("[END]", 402)],
+        );
+        assert_eq!(bpe.encode("<tag>+[END]<tag>"), vec![401, 402, 400]);
     }
 }
