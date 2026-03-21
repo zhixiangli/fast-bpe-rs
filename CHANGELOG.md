@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.1.2...v0.1.3) (2026-03-21)
+
+
+### Bug Fixes
+
+* set release to draft before uploading assets on retry ([#37](https://github.com/zhixiangli/fast-bpe-rs/issues/37)) ([3d45a36](https://github.com/zhixiangli/fast-bpe-rs/commit/3d45a36790160494e6fe951ab6dde99bcbf18927))
+
 ## [0.1.2](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.1.1...v0.1.2) (2026-03-21)
 
 
