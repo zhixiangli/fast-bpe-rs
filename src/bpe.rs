@@ -1,7 +1,7 @@
 use crate::chain::Chain;
 use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, TokenId};
 use fancy_regex::{Regex, escape};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 /// Errors that can occur while constructing a [`BPE`] instance.
@@ -63,9 +63,10 @@ pub struct BPE {
     //   1. "Which pair is currently most frequent?"
     //   2. "Where does that pair appear so we can rewrite those locations?"
     chains: Vec<Chain>,
-    count_to_pairs: BTreeMap<u32, BTreeSet<Pair>>, // frequency -> pairs
-    pair_counts: HashMap<Pair, u32>,               // pair -> frequency
-    pair_locs: HashMap<Pair, PairLocations>,       // pair -> (chain_idx, node_pos)
+    count_to_pairs: Vec<BTreeSet<Pair>>,     // frequency -> pairs
+    max_pair_count: u32,                     // largest non-empty frequency bucket
+    pair_counts: HashMap<Pair, u32>,         // pair -> frequency
+    pair_locs: HashMap<Pair, PairLocations>, // pair -> (chain_idx, node_pos)
 }
 
 impl BPE {
@@ -128,7 +129,8 @@ impl BPE {
             vocab,
             merge_map: HashMap::new(),
             chains: Vec::new(),
-            count_to_pairs: BTreeMap::new(),
+            count_to_pairs: vec![BTreeSet::new()],
+            max_pair_count: 0,
             pair_counts: HashMap::new(),
             pair_locs: HashMap::new(),
         })
@@ -174,11 +176,15 @@ impl BPE {
         if old_count > 0 {
             let bucket = self
                 .count_to_pairs
-                .get_mut(&old_count)
+                .get_mut(old_count as usize)
                 .expect("existing pair count bucket must exist");
             bucket.remove(&pair);
-            if bucket.is_empty() {
-                self.count_to_pairs.remove(&old_count);
+            if self.max_pair_count == old_count && bucket.is_empty() {
+                while self.max_pair_count > 0
+                    && self.count_to_pairs[self.max_pair_count as usize].is_empty()
+                {
+                    self.max_pair_count -= 1;
+                }
             }
         }
 
@@ -189,10 +195,13 @@ impl BPE {
         }
 
         self.pair_counts.insert(pair, new_count);
-        self.count_to_pairs
-            .entry(new_count)
-            .or_default()
-            .insert(pair);
+        if self.count_to_pairs.len() <= new_count as usize {
+            self.count_to_pairs
+                .resize_with(new_count as usize + 1, BTreeSet::new);
+        }
+        self.count_to_pairs[new_count as usize].insert(pair);
+        self.max_pair_count = self.max_pair_count.max(new_count);
+
         let locations = self.pair_locs.entry(pair).or_default();
         if delta > 0 {
             locations.insert((chain_index, pos));
@@ -239,9 +248,8 @@ impl BPE {
         {
             let Some(best_pair) = self
                 .count_to_pairs
-                .iter()
-                .next_back()
-                .and_then(|(_, bucket)| bucket.iter().next())
+                .get(self.max_pair_count as usize)
+                .and_then(|bucket| bucket.iter().next())
                 .copied()
             else {
                 break;
@@ -407,6 +415,8 @@ impl BPE {
         self.merge_map.clear();
         self.chains.clear();
         self.count_to_pairs.clear();
+        self.count_to_pairs.push(BTreeSet::new());
+        self.max_pair_count = 0;
         self.pair_counts.clear();
         self.pair_locs.clear();
     }
@@ -473,7 +483,8 @@ mod tests {
         assert_eq!(bpe.decode(vec![999_999]), Vec::<u8>::new());
         assert!(bpe.merge_map.is_empty());
         assert!(bpe.chains.is_empty());
-        assert!(bpe.count_to_pairs.is_empty());
+        assert_eq!(bpe.count_to_pairs.len(), 1);
+        assert!(bpe.count_to_pairs[0].is_empty());
         assert!(bpe.pair_counts.is_empty());
         assert!(bpe.pair_locs.is_empty());
     }
