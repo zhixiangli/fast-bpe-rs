@@ -267,6 +267,8 @@ impl BPE {
         let mut chains = std::mem::take(&mut self.chains);
 
         // Estimate the number of unique adjacent pairs to pre-allocate the index structures.
+        // At this point chains are freshly created from splitting, so all nodes are live
+        // (no tombstones yet) and nodes.len() - 1 gives the exact adjacent pair count.
         let estimated_pairs: usize = chains
             .iter()
             .map(|wc| wc.chain.nodes.len().saturating_sub(1))
@@ -367,6 +369,15 @@ impl BPE {
                     self.adjust((best_pair.1, next_id), chain_index, right_pos, -frequency);
                     self.adjust((merged_id, next_id), chain_index, new_pos, frequency);
                 }
+            }
+
+            // Clean up the placeholder entry if no neighbor adjustments added locations.
+            if self
+                .pair_locs
+                .get(&best_pair)
+                .is_some_and(|locs| locs.is_empty())
+            {
+                self.pair_locs.remove(&best_pair);
             }
         }
 
