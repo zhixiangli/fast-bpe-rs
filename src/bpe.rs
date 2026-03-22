@@ -221,18 +221,15 @@ impl BPE {
         // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
         let mut chains = std::mem::take(&mut self.chains);
 
-        // Seed the pair-frequency index with every currently-adjacent pair.
+        // Seed the pair-frequency index with every currently-adjacent pair without
+        // materializing an extra per-chain node snapshot.
         for (chain_index, chain) in chains.iter().enumerate() {
-            let nodes: Vec<_> = chain.iter().collect();
-            for window in nodes.windows(2) {
-                let (left_pos, left_node) = window[0];
-                let (_, right_node) = window[1];
-                self.adjust(
-                    (left_node.token_id, right_node.token_id),
-                    chain_index,
-                    left_pos,
-                    1,
-                );
+            let mut previous = None;
+            for (pos, node) in chain.iter() {
+                if let Some((left_pos, left_id)) = previous {
+                    self.adjust((left_id, node.token_id), chain_index, left_pos, 1);
+                }
+                previous = Some((pos, node.token_id));
             }
         }
 

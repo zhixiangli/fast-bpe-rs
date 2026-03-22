@@ -14,20 +14,21 @@ pub(crate) struct Node {
     pub(crate) next: Option<NodePos>,
 }
 
-/// Sparse linked list stored inside a grow-only `Vec`.
+/// Sparse linked list stored inside a fixed-width `Vec`.
 ///
 /// Visual model:
 ///
 /// ```text
 /// nodes vec:  [0] <-> [1] <-> [2] <-> [3]
-/// merge 1,2:  [0]     x     x    [3] <-> [4]
-/// head --------------------------------^ or stays at 0
+/// merge 1,2:  [0] <-> [1]     x    [3]
+///                    ^ merged token now reuses the left slot
 /// ```
 ///
-/// Removed nodes are replaced with `None`, while new merged nodes are appended at the end.
+/// Removed right-hand nodes are replaced with `None`, while the left-hand node is updated in place
+/// so repeated merges do not grow the backing allocation.
 #[derive(Debug)]
 pub(crate) struct Chain {
-    /// Slots for both live nodes and tombstones from earlier merges.
+    /// Slots for live nodes and tombstones from earlier merges.
     pub(crate) nodes: Vec<Option<Node>>,
     /// Index of the first live node in the linked structure.
     pub(crate) head: Option<NodePos>,
@@ -79,7 +80,7 @@ impl Chain {
         })
     }
 
-    /// Replaces an adjacent `[left, right]` pair with a newly-appended merged node.
+    /// Replaces an adjacent `[left, right]` pair with an in-place merged node.
     ///
     /// Before:
     ///
@@ -90,8 +91,7 @@ impl Chain {
     /// After:
     ///
     /// ```text
-    /// prev <-> merged <-> next
-    ///          ^ appended at the end of `nodes`
+    /// prev <-> left(merged) <-> next
     /// ```
     pub(crate) fn splice(
         &mut self,
@@ -107,34 +107,31 @@ impl Chain {
             "splice requires adjacent nodes"
         );
 
-        let prev = left_node.prev;
-        let next = right_node.next;
-        let pos = self.nodes.len();
+        let merged = Node {
+            token_id: new_token_id,
+            prev: left_node.prev,
+            next: right_node.next,
+        };
 
-        if let Some(prev_pos) = prev {
+        if let Some(prev_pos) = merged.prev {
             self.nodes[prev_pos]
                 .as_mut()
                 .expect("previous splice node must exist")
-                .next = Some(pos);
+                .next = Some(left);
         } else {
-            self.head = Some(pos);
+            self.head = Some(left);
         }
 
-        if let Some(next_pos) = next {
+        if let Some(next_pos) = merged.next {
             self.nodes[next_pos]
                 .as_mut()
                 .expect("next splice node must exist")
-                .prev = Some(pos);
+                .prev = Some(left);
         }
 
-        self.nodes.push(Some(Node {
-            token_id: new_token_id,
-            prev,
-            next,
-        }));
-        self.nodes[left] = None;
+        self.nodes[left] = Some(merged);
         self.nodes[right] = None;
-        pos
+        left
     }
 }
 
@@ -182,11 +179,13 @@ mod tests {
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
 
-        assert_eq!(merged_pos, 4);
-        assert_eq!(nodes, vec![(0, b'a' as u32), (4, 999), (3, b'd' as u32)]);
+        assert_eq!(merged_pos, 1);
+        assert_eq!(nodes, vec![(0, b'a' as u32), (1, 999), (3, b'd' as u32)]);
         assert_eq!(chain.head, Some(0));
-        assert_eq!(chain.nodes[0].expect("node 0 should exist").next, Some(4));
-        assert_eq!(chain.nodes[3].expect("node 3 should exist").prev, Some(4));
+        assert_eq!(chain.nodes.len(), 4);
+        assert_eq!(chain.nodes[0].expect("node 0 should exist").next, Some(1));
+        assert_eq!(chain.nodes[3].expect("node 3 should exist").prev, Some(1));
+        assert!(chain.nodes[2].is_none());
     }
 
     #[test]
@@ -199,12 +198,32 @@ mod tests {
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
 
-        assert_eq!(merged_pos, 3);
-        assert_eq!(chain.head, Some(3));
-        assert_eq!(nodes, vec![(3, 777), (2, b'c' as u32)]);
+        assert_eq!(merged_pos, 0);
+        assert_eq!(chain.head, Some(0));
+        assert_eq!(nodes, vec![(0, 777), (2, b'c' as u32)]);
         assert_eq!(
             chain.nodes[2].expect("tail node should exist").prev,
-            Some(3)
+            Some(0)
         );
+        assert!(chain.nodes[1].is_none());
+    }
+
+    #[test]
+    fn repeated_splices_reuse_existing_capacity() {
+        let mut chain = Chain::new(b"aaaa");
+
+        let first = chain.splice(0, 1, 256);
+        let second = chain.splice(first, 2, 257);
+
+        let nodes: Vec<(usize, u32)> = chain
+            .iter()
+            .map(|(pos, node)| (pos, node.token_id))
+            .collect();
+
+        assert_eq!(second, 0);
+        assert_eq!(chain.nodes.len(), 4);
+        assert_eq!(nodes, vec![(0, 257), (3, b'a' as u32)]);
+        assert!(chain.nodes[1].is_none());
+        assert!(chain.nodes[2].is_none());
     }
 }
