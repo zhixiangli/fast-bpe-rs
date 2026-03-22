@@ -48,10 +48,11 @@ impl BPE {
     /// deduplicated training-chain table.
     const SPLIT_BATCH_SIZE: usize = 256;
 
-    /// Builds a stable token-id signature for a chunk so identical chunks can be deduplicated
-    /// before training begins.
-    fn chain_signature(chain: &Chain) -> Vec<TokenId> {
-        chain.iter().map(|(_, node)| node.token_id).collect()
+    /// Builds a compact byte signature for a chain so identical chunks can be deduplicated
+    /// before training begins. At ingestion time, all tokens are byte-level (< 256),
+    /// so we can store them as single bytes instead of full u32 token ids.
+    fn chain_signature(chain: &Chain) -> Vec<u8> {
+        chain.iter().map(|(_, node)| node.token_id as u8).collect()
     }
 
     /// Splits a bounded batch of documents in parallel so training only retains one batch of
@@ -68,7 +69,7 @@ impl BPE {
     /// frequencies rather than document position.
     fn ingest_split_batch(
         &mut self,
-        chain_indexes: &mut HashMap<Vec<TokenId>, ChainIndex>,
+        chain_indexes: &mut HashMap<Vec<u8>, ChainIndex>,
         split_docs: Vec<Vec<Chain>>,
     ) {
         for chains in split_docs {
@@ -245,7 +246,7 @@ impl BPE {
     pub fn train(&mut self, vocab_size: TokenId, docs: impl IntoIterator<Item = impl AsRef<str>>) {
         self.reset_training_state();
 
-        let mut chain_indexes = HashMap::<Vec<TokenId>, ChainIndex>::new();
+        let mut chain_indexes = HashMap::<Vec<u8>, ChainIndex>::new();
         let mut split_batch = Vec::with_capacity(Self::SPLIT_BATCH_SIZE);
         for doc in docs {
             split_batch.push(doc.as_ref().to_owned());
@@ -258,8 +259,20 @@ impl BPE {
             self.ingest_split_batch(&mut chain_indexes, self.split_docs_batch(&split_batch));
         }
 
+        // Free ingestion-only structures before the merge loop to reduce peak memory.
+        drop(chain_indexes);
+        drop(split_batch);
+
         // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
         let mut chains = std::mem::take(&mut self.chains);
+
+        // Estimate the number of unique adjacent pairs to pre-allocate the index structures.
+        let estimated_pairs: usize = chains
+            .iter()
+            .map(|wc| wc.chain.nodes.len().saturating_sub(1))
+            .sum();
+        self.pair_counts.reserve(estimated_pairs);
+        self.pair_locs.reserve(estimated_pairs);
 
         // Seed the pair-frequency index with every currently-adjacent pair without
         // materializing an extra per-chain node snapshot.
@@ -298,7 +311,6 @@ impl BPE {
             self.merge_map.insert(best_pair, merged_id);
 
             // Take all locations for the best pair at once instead of draining one by one.
-            // This avoids O(k²) lookup cost when removing each location from the Vec.
             // Re-insert an empty Vec so neighbor adjust calls (which may reference
             // best_pair when pairs overlap) can still update pair_locs correctly.
             let locations = self.pair_locs.remove(&best_pair).unwrap_or_default();
@@ -486,7 +498,12 @@ mod tests {
 
         assert_eq!(bpe.chains.len(), 1);
         assert_eq!(bpe.chains[0].frequency, 3);
-        assert_eq!(BPE::chain_signature(&bpe.chains[0].chain), vec![257]);
+        let tokens: Vec<TokenId> = bpe.chains[0]
+            .chain
+            .iter()
+            .map(|(_, n)| n.token_id)
+            .collect();
+        assert_eq!(tokens, vec![257]);
         assert_eq!(bpe.vocab.get(&256), Some(&b"he".to_vec()));
         assert_eq!(bpe.vocab.get(&257), Some(&b"the".to_vec()));
         assert_eq!(bpe.pair_counts.get(&(b't' as u32, b'h' as u32)), None);
