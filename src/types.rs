@@ -4,7 +4,7 @@ pub(crate) const BASE_VOCAB_SIZE: u32 = 256;
 /// Public/external token identifier type used throughout the crate.
 pub(crate) type TokenId = u32;
 /// Index into a [`crate::chain::Chain`] node buffer.
-pub(crate) type NodePos = usize;
+pub(crate) type NodePos = u32;
 /// Adjacent token pair used as the key for merge rules.
 pub(crate) type Pair = (TokenId, TokenId);
 /// Index into [`crate::bpe::BPE`] training chains.
