@@ -233,7 +233,7 @@ impl BPE {
             }
         }
 
-        let reserved_ids: Vec<_> = self.special_tokens.values().copied().collect();
+        let reserved_ids: HashSet<_> = self.special_tokens.values().copied().collect();
         for merged_id in
             (BASE_VOCAB_SIZE..vocab_size).filter(|token_id| !reserved_ids.contains(token_id))
         {
@@ -256,14 +256,13 @@ impl BPE {
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
-            // Copy the location list up front because `adjust` mutates `pair_locs`.
-            let locations: Vec<_> = self
+            // Drain locations incrementally so training does not duplicate the full occurrence
+            // set for the hottest pair in a temporary `Vec`.
+            while let Some((chain_index, left_pos)) = self
                 .pair_locs
                 .get(&best_pair)
-                .map(|set| set.iter().copied().collect())
-                .unwrap_or_default();
-
-            for (chain_index, left_pos) in locations {
+                .and_then(|locations| locations.first().copied())
+            {
                 let Some(left_node) = chains[chain_index].nodes[left_pos] else {
                     continue;
                 };
