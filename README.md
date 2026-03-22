@@ -90,6 +90,18 @@ text = bpe.decode_to_string(ids)
 
 ---
 
+## How should I write my commits?
+
+This project uses [Release Please](https://github.com/googleapis/release-please) to prepare releases, so commit messages should follow the [Conventional Commits](https://www.conventionalcommits.org/) format. That helps the release automation determine version bumps and generate changelog entries correctly.
+
+Examples:
+
+- `feat: add support for custom regex patterns`
+- `fix: handle invalid split regex in python bindings`
+- `docs: clarify installation requirements`
+
+---
+
 ## License
 
 [Apache 2.0](LICENSE)
