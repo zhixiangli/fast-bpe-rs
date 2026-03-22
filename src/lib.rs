@@ -2,10 +2,12 @@
 
 mod bpe;
 mod chain;
+mod error;
 mod python;
 mod types;
 
 pub use crate::bpe::BPE;
+pub use crate::error::BPEError;
 pub use crate::python::PyBPE;
 
 use pyo3::prelude::*;
