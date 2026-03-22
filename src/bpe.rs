@@ -271,13 +271,13 @@ impl BPE {
                 .get(&best_pair)
                 .and_then(|locations| locations.first().copied())
             {
-                let Some(left_node) = chains[chain_index].nodes[left_pos] else {
+                let Some(left_node) = chains[chain_index].nodes[left_pos as usize] else {
                     continue;
                 };
                 let Some(right_pos) = left_node.next else {
                     continue;
                 };
-                let Some(right_node) = chains[chain_index].nodes[right_pos] else {
+                let Some(right_node) = chains[chain_index].nodes[right_pos as usize] else {
                     continue;
                 };
                 if (left_node.token_id, right_node.token_id) != best_pair {
@@ -294,12 +294,12 @@ impl BPE {
                 let prev = left_node.prev;
                 let next = right_node.next;
                 let prev_id = prev.map(|pos| {
-                    chains[chain_index].nodes[pos]
+                    chains[chain_index].nodes[pos as usize]
                         .expect("previous node must exist")
                         .token_id
                 });
                 let next_id = next.map(|pos| {
-                    chains[chain_index].nodes[pos]
+                    chains[chain_index].nodes[pos as usize]
                         .expect("next node must exist")
                         .token_id
                 });

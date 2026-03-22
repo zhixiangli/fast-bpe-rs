@@ -54,7 +54,7 @@ impl Chain {
             .iter()
             .enumerate()
             .map(|(index, &byte)| {
-                let pos = index;
+                let pos = NodePos::try_from(index).expect("chain length exceeds NodePos capacity");
                 Some(Node {
                     token_id: TokenId::from(byte),
                     prev: pos.checked_sub(1),
@@ -74,7 +74,7 @@ impl Chain {
         let mut current = self.head;
         std::iter::from_fn(move || {
             let pos = current?;
-            let node = self.nodes[pos].expect("chain iterator visited a removed node");
+            let node = self.nodes[pos as usize].expect("chain iterator visited a removed node");
             current = node.next;
             Some((pos, node))
         })
@@ -99,8 +99,8 @@ impl Chain {
         right: NodePos,
         new_token_id: TokenId,
     ) -> NodePos {
-        let left_node = self.nodes[left].expect("left splice node must exist");
-        let right_node = self.nodes[right].expect("right splice node must exist");
+        let left_node = self.nodes[left as usize].expect("left splice node must exist");
+        let right_node = self.nodes[right as usize].expect("right splice node must exist");
         debug_assert_eq!(
             left_node.next,
             Some(right),
@@ -114,7 +114,7 @@ impl Chain {
         };
 
         if let Some(prev_pos) = merged.prev {
-            self.nodes[prev_pos]
+            self.nodes[prev_pos as usize]
                 .as_mut()
                 .expect("previous splice node must exist")
                 .next = Some(left);
@@ -123,14 +123,14 @@ impl Chain {
         }
 
         if let Some(next_pos) = merged.next {
-            self.nodes[next_pos]
+            self.nodes[next_pos as usize]
                 .as_mut()
                 .expect("next splice node must exist")
                 .prev = Some(left);
         }
 
-        self.nodes[left] = Some(merged);
-        self.nodes[right] = None;
+        self.nodes[left as usize] = Some(merged);
+        self.nodes[right as usize] = None;
         left
     }
 }
@@ -174,7 +174,7 @@ mod tests {
         let mut chain = Chain::new(b"abcd");
 
         let merged_pos = chain.splice(1, 2, 999);
-        let nodes: Vec<(usize, u32)> = chain
+        let nodes: Vec<(NodePos, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
@@ -193,7 +193,7 @@ mod tests {
         let mut chain = Chain::new(b"abc");
 
         let merged_pos = chain.splice(0, 1, 777);
-        let nodes: Vec<(usize, u32)> = chain
+        let nodes: Vec<(NodePos, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
@@ -215,7 +215,7 @@ mod tests {
         let first = chain.splice(0, 1, 256);
         let second = chain.splice(first, 2, 257);
 
-        let nodes: Vec<(usize, u32)> = chain
+        let nodes: Vec<(NodePos, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
