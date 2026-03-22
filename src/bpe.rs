@@ -77,6 +77,12 @@ pub struct BPE {
 }
 
 impl BPE {
+    /// Builds a stable token-id signature for a chunk so identical chunks can be deduplicated
+    /// before training begins.
+    fn chain_signature(chain: &Chain) -> Vec<TokenId> {
+        chain.iter().map(|(_, node)| node.token_id).collect()
+    }
+
     /// Constructs a model and panics if the split regex is invalid.
     pub fn new(split_pattern: impl AsRef<str>) -> Self {
         Self::try_new(split_pattern).expect("invalid split regex")
@@ -236,7 +242,7 @@ impl BPE {
         let mut chain_indexes = HashMap::<Vec<TokenId>, ChainIndex>::new();
         for doc in docs {
             for chain in self.split(doc) {
-                let signature = chain.token_ids();
+                let signature = Self::chain_signature(&chain);
                 if let Some(&chain_index) = chain_indexes.get(&signature) {
                     self.chains[chain_index].frequency += 1;
                 } else {
@@ -473,7 +479,7 @@ mod tests {
 
         assert_eq!(bpe.chains.len(), 1);
         assert_eq!(bpe.chains[0].frequency, 3);
-        assert_eq!(bpe.chains[0].chain.token_ids(), vec![257]);
+        assert_eq!(BPE::chain_signature(&bpe.chains[0].chain), vec![257]);
         assert_eq!(bpe.vocab.get(&256), Some(&b"he".to_vec()));
         assert_eq!(bpe.vocab.get(&257), Some(&b"the".to_vec()));
         assert_eq!(bpe.pair_counts.get(&(b't' as u32, b'h' as u32)), None);

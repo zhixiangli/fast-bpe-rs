@@ -80,11 +80,6 @@ impl Chain {
         })
     }
 
-    /// Collects the live token ids in linked-list order.
-    pub(crate) fn token_ids(&self) -> Vec<TokenId> {
-        self.iter().map(|(_, node)| node.token_id).collect()
-    }
-
     /// Replaces an adjacent `[left, right]` pair with an in-place merged node.
     ///
     /// Before:
@@ -230,13 +225,5 @@ mod tests {
         assert_eq!(nodes, vec![(0, 257), (3, b'a' as u32)]);
         assert!(chain.nodes[1].is_none());
         assert!(chain.nodes[2].is_none());
-    }
-
-    #[test]
-    fn token_ids_follow_live_link_order() {
-        let mut chain = Chain::new(b"abcd");
-        chain.splice(1, 2, 999);
-
-        assert_eq!(chain.token_ids(), vec![b'a' as u32, 999, b'd' as u32]);
     }
 }
