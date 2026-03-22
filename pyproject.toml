@@ -29,8 +29,12 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
+  "datasets>=4.1",
+  "distro>=1.9",
   "maturin>=1.7,<2.0",
   "pre-commit>=4.2",
+  "psutil>=7.0",
+  "py-cpuinfo>=9.0",
   "pytest>=8.3",
   "ruff>=0.11.13",
   "tiktoken>=0.12",
