@@ -2,6 +2,7 @@ use crate::chain::Chain;
 use crate::error::BPEError;
 use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, TokenId};
 use fancy_regex::{Regex, escape};
+use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
@@ -43,10 +44,48 @@ pub struct BPE {
 }
 
 impl BPE {
+    /// Number of documents to split concurrently before folding the results back into the
+    /// deduplicated training-chain table.
+    const SPLIT_BATCH_SIZE: usize = 256;
+
     /// Builds a stable token-id signature for a chunk so identical chunks can be deduplicated
     /// before training begins.
     fn chain_signature(chain: &Chain) -> Vec<TokenId> {
         chain.iter().map(|(_, node)| node.token_id).collect()
+    }
+
+    /// Splits a bounded batch of documents in parallel so training only retains one batch of
+    /// intermediate chains at a time.
+    fn split_docs_batch(&self, docs: &[String]) -> Vec<Vec<Chain>> {
+        docs.par_iter()
+            .map(|doc| self.split(doc))
+            .collect::<Vec<_>>()
+    }
+
+    /// Folds a previously split batch into the deduplicated training-chain table.
+    ///
+    /// Chunk order does not affect training because merges are learned from aggregated chunk
+    /// frequencies rather than document position.
+    fn ingest_split_batch(
+        &mut self,
+        chain_indexes: &mut HashMap<Vec<TokenId>, ChainIndex>,
+        split_docs: Vec<Vec<Chain>>,
+    ) {
+        for chains in split_docs {
+            for chain in chains {
+                let signature = Self::chain_signature(&chain);
+                if let Some(&chain_index) = chain_indexes.get(&signature) {
+                    self.chains[chain_index].frequency += 1;
+                } else {
+                    let chain_index = self.chains.len();
+                    self.chains.push(WeightedChain {
+                        chain,
+                        frequency: 1,
+                    });
+                    chain_indexes.insert(signature, chain_index);
+                }
+            }
+        }
     }
 
     /// Constructs a model and panics if the split regex is invalid.
@@ -206,20 +245,16 @@ impl BPE {
         self.reset_training_state();
 
         let mut chain_indexes = HashMap::<Vec<TokenId>, ChainIndex>::new();
+        let mut split_batch = Vec::with_capacity(Self::SPLIT_BATCH_SIZE);
         for doc in docs {
-            for chain in self.split(doc) {
-                let signature = Self::chain_signature(&chain);
-                if let Some(&chain_index) = chain_indexes.get(&signature) {
-                    self.chains[chain_index].frequency += 1;
-                } else {
-                    let chain_index = self.chains.len();
-                    self.chains.push(WeightedChain {
-                        chain,
-                        frequency: 1,
-                    });
-                    chain_indexes.insert(signature, chain_index);
-                }
+            split_batch.push(doc.as_ref().to_owned());
+            if split_batch.len() == Self::SPLIT_BATCH_SIZE {
+                self.ingest_split_batch(&mut chain_indexes, self.split_docs_batch(&split_batch));
+                split_batch.clear();
             }
+        }
+        if !split_batch.is_empty() {
+            self.ingest_split_batch(&mut chain_indexes, self.split_docs_batch(&split_batch));
         }
 
         // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
