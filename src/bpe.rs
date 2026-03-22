@@ -4,6 +4,13 @@ use fancy_regex::{Regex, escape};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
+/// One unique training chunk plus the number of corpus occurrences it represents.
+#[derive(Debug)]
+struct WeightedChain {
+    chain: Chain,
+    frequency: u32,
+}
+
 /// Errors that can occur while constructing a [`BPE`] instance.
 #[derive(Debug)]
 pub enum BPEError {
@@ -57,12 +64,12 @@ pub struct BPE {
 
     // Training-time index structures.
     //
-    // `chains` stores every training chunk as a mutable token chain.
+    // `chains` stores each unique training chunk once alongside its corpus frequency.
     // `pair_counts`, `count_to_pairs`, and `pair_locs` together act like an indexed priority queue
     // that answers two questions efficiently:
     //   1. "Which pair is currently most frequent?"
     //   2. "Where does that pair appear so we can rewrite those locations?"
-    chains: Vec<Chain>,
+    chains: Vec<WeightedChain>,
     count_to_pairs: Vec<BTreeSet<Pair>>,     // frequency -> pairs
     max_pair_count: u32,                     // largest non-empty frequency bucket
     pair_counts: HashMap<Pair, u32>,         // pair -> frequency
@@ -70,6 +77,12 @@ pub struct BPE {
 }
 
 impl BPE {
+    /// Builds a stable token-id signature for a chunk so identical chunks can be deduplicated
+    /// before training begins.
+    fn chain_signature(chain: &Chain) -> Vec<TokenId> {
+        chain.iter().map(|(_, node)| node.token_id).collect()
+    }
+
     /// Constructs a model and panics if the split regex is invalid.
     pub fn new(split_pattern: impl AsRef<str>) -> Self {
         Self::try_new(split_pattern).expect("invalid split regex")
@@ -169,9 +182,12 @@ impl BPE {
     ///
     /// When a merge removes or creates a pair we update all three views together so the next
     /// training step can still find the globally most frequent pair in `O(log n)` map time.
-    fn adjust(&mut self, pair: Pair, chain_index: ChainIndex, pos: NodePos, delta: i32) {
+    fn adjust(&mut self, pair: Pair, chain_index: ChainIndex, pos: NodePos, delta: i64) {
         let old_count = self.pair_counts.get(&pair).copied().unwrap_or_default();
-        let new_count = (old_count as i32 + delta) as u32;
+        let new_count_i64 = i64::from(old_count) + delta;
+        debug_assert!(new_count_i64 >= 0, "pair counts must stay non-negative");
+        let new_count =
+            u32::try_from(new_count_i64).expect("pair counts must fit in u32 after adjustment");
 
         if old_count > 0 {
             let bucket = self
@@ -223,8 +239,21 @@ impl BPE {
     pub fn train(&mut self, vocab_size: TokenId, docs: impl IntoIterator<Item = impl AsRef<str>>) {
         self.reset_training_state();
 
+        let mut chain_indexes = HashMap::<Vec<TokenId>, ChainIndex>::new();
         for doc in docs {
-            self.chains.extend(self.split(doc));
+            for chain in self.split(doc) {
+                let signature = Self::chain_signature(&chain);
+                if let Some(&chain_index) = chain_indexes.get(&signature) {
+                    self.chains[chain_index].frequency += 1;
+                } else {
+                    let chain_index = self.chains.len();
+                    self.chains.push(WeightedChain {
+                        chain,
+                        frequency: 1,
+                    });
+                    chain_indexes.insert(signature, chain_index);
+                }
+            }
         }
 
         // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
@@ -232,11 +261,12 @@ impl BPE {
 
         // Seed the pair-frequency index with every currently-adjacent pair without
         // materializing an extra per-chain node snapshot.
-        for (chain_index, chain) in chains.iter().enumerate() {
+        for (chain_index, weighted_chain) in chains.iter().enumerate() {
+            let frequency = i64::from(weighted_chain.frequency);
             let mut previous = None;
-            for (pos, node) in chain.iter() {
+            for (pos, node) in weighted_chain.chain.iter() {
                 if let Some((left_pos, left_id)) = previous {
-                    self.adjust((left_id, node.token_id), chain_index, left_pos, 1);
+                    self.adjust((left_id, node.token_id), chain_index, left_pos, frequency);
                 }
                 previous = Some((pos, node.token_id));
             }
@@ -271,13 +301,14 @@ impl BPE {
                 .get(&best_pair)
                 .and_then(|locations| locations.first().copied())
             {
-                let Some(left_node) = chains[chain_index].nodes[left_pos as usize] else {
+                let frequency = i64::from(chains[chain_index].frequency);
+                let Some(left_node) = chains[chain_index].chain.nodes[left_pos as usize] else {
                     continue;
                 };
                 let Some(right_pos) = left_node.next else {
                     continue;
                 };
-                let Some(right_node) = chains[chain_index].nodes[right_pos as usize] else {
+                let Some(right_node) = chains[chain_index].chain.nodes[right_pos as usize] else {
                     continue;
                 };
                 if (left_node.token_id, right_node.token_id) != best_pair {
@@ -294,26 +325,28 @@ impl BPE {
                 let prev = left_node.prev;
                 let next = right_node.next;
                 let prev_id = prev.map(|pos| {
-                    chains[chain_index].nodes[pos as usize]
+                    chains[chain_index].chain.nodes[pos as usize]
                         .expect("previous node must exist")
                         .token_id
                 });
                 let next_id = next.map(|pos| {
-                    chains[chain_index].nodes[pos as usize]
+                    chains[chain_index].chain.nodes[pos as usize]
                         .expect("next node must exist")
                         .token_id
                 });
 
-                let new_pos = chains[chain_index].splice(left_pos, right_pos, merged_id);
+                let new_pos = chains[chain_index]
+                    .chain
+                    .splice(left_pos, right_pos, merged_id);
 
-                self.adjust(best_pair, chain_index, left_pos, -1);
+                self.adjust(best_pair, chain_index, left_pos, -frequency);
                 if let (Some(prev_id), Some(prev_pos)) = (prev_id, prev) {
-                    self.adjust((prev_id, best_pair.0), chain_index, prev_pos, -1);
-                    self.adjust((prev_id, merged_id), chain_index, prev_pos, 1);
+                    self.adjust((prev_id, best_pair.0), chain_index, prev_pos, -frequency);
+                    self.adjust((prev_id, merged_id), chain_index, prev_pos, frequency);
                 }
                 if let Some(next_id) = next_id {
-                    self.adjust((best_pair.1, next_id), chain_index, right_pos, -1);
-                    self.adjust((merged_id, next_id), chain_index, new_pos, 1);
+                    self.adjust((best_pair.1, next_id), chain_index, right_pos, -frequency);
+                    self.adjust((merged_id, next_id), chain_index, new_pos, frequency);
                 }
             }
         }
@@ -437,6 +470,20 @@ mod tests {
         let encoded = bpe.encode("abababa");
         assert_eq!(encoded, vec![256, 256, 256, b'a' as u32]);
         assert_eq!(bpe.decode(encoded), b"abababa");
+    }
+
+    #[test]
+    fn train_aggregates_identical_chunks_and_weights_pair_counts() {
+        let mut bpe = BPE::new("\\S+");
+        bpe.train(258, ["the the", "the"]);
+
+        assert_eq!(bpe.chains.len(), 1);
+        assert_eq!(bpe.chains[0].frequency, 3);
+        assert_eq!(BPE::chain_signature(&bpe.chains[0].chain), vec![257]);
+        assert_eq!(bpe.vocab.get(&256), Some(&b"he".to_vec()));
+        assert_eq!(bpe.vocab.get(&257), Some(&b"the".to_vec()));
+        assert_eq!(bpe.pair_counts.get(&(b't' as u32, b'h' as u32)), None);
+        assert_eq!(bpe.encode("the the"), vec![257, 257]);
     }
 
     #[test]
