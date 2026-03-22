@@ -1,100 +1,77 @@
 # fast-bpe-rs
 
-A high-performance [Byte Pair Encoding (BPE)](https://en.wikipedia.org/wiki/Byte_pair_encoding) tokenizer written in **Rust**, with Python bindings.
+A blazing-fast [Byte Pair Encoding](https://en.wikipedia.org/wiki/Byte_pair_encoding) tokenizer — written in Rust, usable from Python.
 
-## Why this exists
+---
 
-BPE is at the heart of every major LLM today — GPT, LLaMA, Mistral, and friends all use it to convert raw text into the token sequences the model actually sees. **Getting tokenizer training right, and fast, matters.**
+## What makes it fast?
 
-The standard Python BPE implementations are correct but slow — training on large corpora becomes a real bottleneck. Existing Rust ports are faster by virtue of the language, but most carry over the same naïve O(n·V) algorithm. This project starts from Rust and rethinks the algorithm itself, using a **doubly-linked list** to represent token chains and a **frequency-indexed BTreeMap** to find the next best merge in O(log V) instead of a full scan.
+Most BPE implementations rescan the entire corpus after every merge. `fast-bpe-rs` doesn't.
 
-## Algorithm improvements
+It uses a **doubly-linked list** to represent token chains and a **frequency-indexed BTreeMap** to find the next best merge. After each merge, only the immediate neighbours of affected positions are updated — skipping the vast majority of work.
 
 | Phase | Naïve BPE | fast-bpe-rs |
 |---|---|---|
-| Per-merge rescan | O(n) | O(kᵢ) — only occurrences of merged pair |
-| Max-pair lookup | O(V) | O(log V) — BTreeMap min |
-| Merge application | O(n) | O(kᵢ) — in-place linked-list edits |
-| **Total training** | **O(n · V)** | **O(Σ kᵢ · log V) ≈ O(n log V)** |
+| Per-merge rescan | O(n) | O(kᵢ) — only affected positions |
+| Max-pair lookup | O(V) | O(log V) — BTreeMap |
+| **Total training** | **O(n · V)** | **O(n log V)** |
 
-Where **n** is corpus size, **V** is vocabulary size, and **kᵢ** is the number of occurrences of the pair merged at step i.
+---
 
-The key insight: after each merge, only the immediate neighbours of every affected position change. Instead of rescanning the whole corpus, the linked-list structure lets us jump directly to those positions and update counts locally. The BTreeMap keeps pairs ordered by frequency so the next best merge is always at the front.
+## Benchmarks
 
-## Results
-
-Benchmarks below use a 5 MB corpus and compare `fast-bpe-rs` against `minbpe` and `rustbpe`. They are intended to show relative behavior rather than serve as a hardware-independent standard.
+Tested on a 5 MB corpus. Numbers show relative behavior, not absolute hardware performance.
 
 ### Training (vocab size = 4,096)
 
-| System | Time (s) | Throughput (MB/s) | Peak RAM (MB) | Speedup vs. `minbpe` BasicTokenizer |
+| | Time (s) | Throughput (MB/s) | Peak RAM (MB) | vs. minbpe |
 |---|---:|---:|---:|---:|
-| `minbpe` BasicTokenizer | 447.3 | 0.011 | 418 | 1.0× |
-| `minbpe` RegexTokenizer | 583.1 | 0.009 | 521 | 0.77× |
-| `rustbpe` | 25.4 | 0.197 | 63 | 17.6× |
-| **`fast-bpe-rs`** | **6.0** | **0.83** | **48** | **74.5×** |
+| minbpe BasicTokenizer | 447.3 | 0.011 | 418 | 1× |
+| minbpe RegexTokenizer | 583.1 | 0.009 | 521 | 0.77× |
+| rustbpe | 25.4 | 0.197 | 63 | 17.6× |
+| **fast-bpe-rs** | **6.0** | **0.83** | **48** | **74.5×** |
 
-Even on a single thread, `fast-bpe-rs` is about **4.2× faster than `rustbpe`** in this setup, largely because incremental updates avoid repeating most of the pair-counting work after each merge.
+### Encoding & Decoding
 
-### Encoding
+| | Encode (MB/s) | Decode (MB/s) |
+|---|---:|---:|
+| minbpe BasicTokenizer | 3.40 | 12.8 |
+| rustbpe | 28.1 | 87.3 |
+| **fast-bpe-rs** | **41.7** | **94.2** |
 
-Encoding applies the learned merge rules to unseen text from the same 5 MB corpus.
+### The advantage grows with vocabulary size
 
-| System | Time (s) | Throughput (MB/s) | Peak RAM (MB) |
-|---|---:|---:|---:|
-| `minbpe` BasicTokenizer | 1.47 | 3.40 | 52 |
-| `minbpe` RegexTokenizer | 1.82 | 2.75 | 67 |
-| `rustbpe` | 0.178 | 28.1 | 24 |
-| **`fast-bpe-rs`** | **0.120** | **41.7** | **19** |
+| Vocab size | fast-bpe-rs speedup vs. minbpe Regex |
+|---|---:|
+| 1,024 | 43× |
+| 2,048 | 62× |
+| 4,096 | 92× |
+| 8,192 | 153× |
 
-### Decoding
+The longer the merge schedule, the more work is skipped — which matches the algorithm's design.
 
-Decoding is mostly dominated by token-to-bytes lookup, so the gap is smaller but still measurable.
-
-| System | Time (s) | Throughput (MB/s) | Peak RAM (MB) |
-|---|---:|---:|---:|
-| `minbpe` BasicTokenizer | 0.391 | 12.8 | 38 |
-| `minbpe` RegexTokenizer | 0.387 | 12.9 | 41 |
-| `rustbpe` | 0.057 | 87.3 | 16 |
-| **`fast-bpe-rs`** | **0.053** | **94.2** | **14** |
-
-### Training throughput vs. vocabulary size
-
-As vocabulary size grows, the benefit of incremental updates becomes more pronounced: the naïve training cost grows roughly linearly with the number of merges, while `fast-bpe-rs` only updates the neighborhoods touched by each merge.
-
-| Vocab size | `minbpe` Regex (MB/s) | `rustbpe` (MB/s) | `fast-bpe-rs` (MB/s) | `fast-bpe-rs` speedup vs. `minbpe` Regex |
-|---|---:|---:|---:|---:|
-| 1,024 | 0.038 | 0.47 | 1.62 | **43×** |
-| 2,048 | 0.018 | 0.28 | 1.12 | **62×** |
-| 4,096 | 0.009 | 0.197 | 0.83 | **92×** |
-| 8,192 | 0.004 | 0.11 | 0.61 | **153×** |
-
-In other words, the advantage widens as the merge schedule gets longer, which matches the asymptotic behavior described above.
+---
 
 ## Quick start
 
-### Installation
+### Install
 
 ```bash
 pip install fast-bpe-rs
 ```
 
-If no prebuilt wheel exists for your platform, pip will compile from source — you'll need a recent [Rust toolchain](https://rustup.rs) installed.
+> No prebuilt wheel for your platform? `pip` will compile from source. You'll need a [Rust toolchain](https://rustup.rs) installed first.
 
 ### Train
 
 ```python
 from fast_bpe_rs import BPE
 
-# The argument is a regex pattern used to pre-split text into chunks.
-# r"(?s).+" treats the whole input as one chunk (simplest case).
-bpe = BPE(r"(?s).+")
-
-# Learn 258 merges on the given corpus
+bpe = BPE(r"(?s).+")  # regex pattern for pre-splitting text
 bpe.train(258, ["low low low low", "lower lower", "newest newest newest"])
 ```
 
-A GPT-style split pattern for real corpora:
+For real corpora, use a GPT-style split pattern:
 
 ```python
 bpe = BPE(
@@ -104,20 +81,14 @@ bpe = BPE(
 bpe.train(50_000, corpus_lines)
 ```
 
-### Encode
+### Encode & Decode
 
 ```python
 ids = bpe.encode("low lower newest")
-print(ids)  # e.g. [260, 262, 259, 261, ...]
-```
-
-### Decode
-
-```python
 text = bpe.decode_to_string(ids)
-print(text)  # "low lower newest"
 ```
 
+---
 
 ## License
 
