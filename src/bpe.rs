@@ -48,17 +48,23 @@ impl BPE {
     /// deduplicated training-chain table.
     const SPLIT_BATCH_SIZE: usize = 256;
 
-    /// Builds a stable token-id signature for a chunk so identical chunks can be deduplicated
-    /// before training begins.
-    fn chain_signature(chain: &Chain) -> Vec<TokenId> {
-        chain.iter().map(|(_, node)| node.token_id).collect()
+    /// Builds a stable byte signature for a freshly split byte-level chunk so identical chunks can
+    /// be deduplicated before training begins.
+    fn chain_signature(chain: &Chain) -> Vec<u8> {
+        chain
+            .iter()
+            .map(|(_, node)| {
+                u8::try_from(node.token_id)
+                    .expect("chain dedup signature only supports byte-level token ids")
+            })
+            .collect()
     }
 
     /// Splits a bounded batch of documents in parallel so training only retains one batch of
     /// intermediate chains at a time.
     fn split_docs_batch(&self, docs: &[String]) -> Vec<Vec<Chain>> {
         docs.par_iter()
-            .map(|doc| self.split(doc))
+            .map(|doc| self.split_for_training(doc))
             .collect::<Vec<_>>()
     }
 
@@ -68,7 +74,7 @@ impl BPE {
     /// frequencies rather than document position.
     fn ingest_split_batch(
         &mut self,
-        chain_indexes: &mut HashMap<Vec<TokenId>, ChainIndex>,
+        chain_indexes: &mut HashMap<Vec<u8>, ChainIndex>,
         split_docs: Vec<Vec<Chain>>,
     ) {
         for chains in split_docs {
@@ -244,7 +250,7 @@ impl BPE {
     pub fn train(&mut self, vocab_size: TokenId, docs: impl IntoIterator<Item = impl AsRef<str>>) {
         self.reset_training_state();
 
-        let mut chain_indexes = HashMap::<Vec<TokenId>, ChainIndex>::new();
+        let mut chain_indexes = HashMap::<Vec<u8>, ChainIndex>::new();
         let mut split_batch = Vec::with_capacity(Self::SPLIT_BATCH_SIZE);
         for doc in docs {
             split_batch.push(doc.as_ref().to_owned());
@@ -406,12 +412,24 @@ impl BPE {
             .collect()
     }
 
+    /// Splits input text into chains for training, using special tokens only as boundaries.
+    ///
+    /// Training learns merges from raw byte spans, so special tokens are excluded rather than
+    /// materialized as chains.
+    fn split_for_training(&self, doc: impl AsRef<str>) -> Vec<Chain> {
+        self.split_impl(doc, false)
+    }
+
     /// Splits input text into independently-encodable chains.
     ///
     /// Special tokens act like pre-tokenized islands. Everything between them is split by the
     /// normal regex, but the special-token literals themselves become single-node chains so they
     /// never merge with surrounding text.
     fn split(&self, doc: impl AsRef<str>) -> Vec<Chain> {
+        self.split_impl(doc, true)
+    }
+
+    fn split_impl(&self, doc: impl AsRef<str>, include_special_tokens: bool) -> Vec<Chain> {
         let doc = doc.as_ref();
         let mut chains = Vec::new();
         let mut cursor = 0;
@@ -425,7 +443,9 @@ impl BPE {
                         .map(|matched| Chain::new(matched.as_str().as_bytes())),
                 );
 
-                if let Some(&token_id) = self.special_tokens.get(matched.as_str()) {
+                if include_special_tokens
+                    && let Some(&token_id) = self.special_tokens.get(matched.as_str())
+                {
                     chains.push(Chain::from_token_id(token_id));
                 }
 
@@ -485,11 +505,19 @@ mod tests {
 
         assert_eq!(bpe.chains.len(), 1);
         assert_eq!(bpe.chains[0].frequency, 3);
-        assert_eq!(BPE::chain_signature(&bpe.chains[0].chain), vec![257]);
+        assert_eq!(BPE::chain_signature(&Chain::new(b"the")), b"the".to_vec());
         assert_eq!(bpe.vocab.get(&256), Some(&b"he".to_vec()));
         assert_eq!(bpe.vocab.get(&257), Some(&b"the".to_vec()));
         assert_eq!(bpe.pair_counts.get(&(b't' as u32, b'h' as u32)), None);
         assert_eq!(bpe.encode("the the"), vec![257, 257]);
+    }
+
+    #[test]
+    #[should_panic(expected = "chain dedup signature only supports byte-level token ids")]
+    fn chain_signature_rejects_non_byte_tokens() {
+        let chain = Chain::from_token_id(BASE_VOCAB_SIZE);
+
+        let _ = BPE::chain_signature(&chain);
     }
 
     #[test]
@@ -612,6 +640,16 @@ mod tests {
     #[test]
     fn try_new_returns_error_for_invalid_regex() {
         assert!(BPE::try_new("(").is_err());
+    }
+
+    #[test]
+    fn training_split_uses_special_tokens_as_boundaries_without_emitting_them() {
+        let bpe = BPE::new_with_special_tokens(r"\S+", [("<pad>", 300), ("<eos>", 301)]);
+
+        let chains = bpe.split_for_training("hi<pad><eos>there");
+        let signatures: Vec<Vec<u8>> = chains.iter().map(BPE::chain_signature).collect();
+
+        assert_eq!(signatures, vec![b"hi".to_vec(), b"there".to_vec()]);
     }
 
     #[test]
