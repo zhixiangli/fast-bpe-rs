@@ -257,6 +257,11 @@ impl BPE {
             self.ingest_split_batch(&mut chain_indexes, self.split_docs_batch(&split_batch));
         }
 
+        // Free the document-splitting scratch space and dedup table before merge training so peak
+        // memory only reflects the chain store plus the live pair indexes.
+        drop(split_batch);
+        drop(chain_indexes);
+
         // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
         let mut chains = std::mem::take(&mut self.chains);
 
