@@ -335,13 +335,14 @@ impl BPE {
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
-            // Drain all locations at once and sort for deterministic overlapping-pair handling.
+            // Snapshot all locations and sort for deterministic overlapping-pair handling.
+            // The original set stays in pair_locs so adjust() calls can modify it in place
+            // without needing to recreate the entry.
             let mut locations: Vec<_> = self
                 .pair_locs
-                .remove(&best_pair)
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
+                .get(&best_pair)
+                .map(|locs| locs.iter().copied().collect::<Vec<_>>())
+                .unwrap_or_default();
             locations.sort_unstable();
 
             for (chain_index, left_pos) in locations {
