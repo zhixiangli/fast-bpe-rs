@@ -318,6 +318,8 @@ impl BPE {
         {
             // Pick the lexicographically smallest pair from the max-frequency bucket to match
             // the deterministic tie-breaking order of the original BTreeSet-based implementation.
+            // This O(n) scan is negligible because the max-count bucket is typically very small
+            // (the most frequent pair count is rarely shared by many pairs).
             let Some(best_pair) = self
                 .count_to_pairs
                 .get(self.max_pair_count as usize)
@@ -335,9 +337,11 @@ impl BPE {
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
-            // Snapshot all locations and sort for deterministic overlapping-pair handling.
-            // The original set stays in pair_locs so adjust() calls can modify it in place
-            // without needing to recreate the entry.
+            // Snapshot all locations and sort by (chain_index, node_pos) for deterministic
+            // overlapping-pair handling: when two occurrences of the best pair overlap in the
+            // same chain (e.g. "aaa" has (a,a) at positions 0 and 1), processing them in
+            // ascending position order ensures the left occurrence merges first, matching the
+            // original BTreeSet iteration order.
             let mut locations: Vec<_> = self
                 .pair_locs
                 .get(&best_pair)
