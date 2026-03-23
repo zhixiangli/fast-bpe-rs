@@ -107,6 +107,7 @@ jobs:
     env:
       TAG_NAME: ${{ needs.release-please.outputs.tag_name || inputs.tag_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Download wheel artifacts
         uses: actions/download-artifact@v8
