@@ -1,7 +1,15 @@
 name: Release
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing release tag to rebuild and republish from the UI (for example, v0.1.5).
+        required: true
+        type: string
 
 concurrency:
   group: release
@@ -10,6 +18,7 @@ concurrency:
 jobs:
   release-please:
     name: Prepare release
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -29,7 +38,10 @@ jobs:
 
   build-distributions:
     name: Build ${{ matrix.name }}
-    if: needs.release-please.outputs.release_created == 'true'
+    if: >-
+      always() && !cancelled() && !failure() &&
+      ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
+      github.event_name == 'workflow_dispatch')
     runs-on: ${{ matrix.os }}
     needs: release-please
     strategy:
@@ -56,11 +68,13 @@ jobs:
             artifact_name: sdist
             command: sdist
             args: --out dist
+    env:
+      RELEASE_REF: ${{ needs.release-please.outputs.sha || inputs.tag_name }}
     steps:
       - name: Check out release commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-please.outputs.sha }}
+          ref: ${{ env.RELEASE_REF }}
 
       - name: Build distribution
         uses: PyO3/maturin-action@v1
@@ -76,7 +90,10 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    if: needs.release-please.outputs.release_created == 'true'
+    if: >-
+      always() && !cancelled() && !failure() &&
+      ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
+      github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     needs:
       - release-please
@@ -88,7 +105,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/fast-bpe-rs
     env:
-      TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+      TAG_NAME: ${{ needs.release-please.outputs.tag_name || inputs.tag_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Download wheel artifacts
