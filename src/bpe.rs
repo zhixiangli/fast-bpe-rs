@@ -1,9 +1,9 @@
 use crate::chain::Chain;
 use crate::error::BPEError;
-use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, TokenId};
+use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NONE, NodePos, Pair, PairLocations, TokenId};
 use fancy_regex::{Regex, escape};
 use rayon::prelude::*;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
 #[derive(Debug)]
@@ -23,11 +23,11 @@ pub struct BPE {
     /// Regex that spots special tokens before normal splitting is applied.
     special_split_pattern: Option<Regex>,
     /// Mapping from literal special-token text to the externally-visible token id.
-    special_tokens: HashMap<String, TokenId>,
+    special_tokens: FxHashMap<String, TokenId>,
     /// Vocabulary entries materialized as raw bytes for decode/inspection.
-    pub(crate) vocab: HashMap<TokenId, Vec<u8>>, // id -> bytes
+    pub(crate) vocab: FxHashMap<TokenId, Vec<u8>>, // id -> bytes
     /// Learned merge rules keyed by `(left, right)` token pairs.
-    pub(crate) merge_map: HashMap<Pair, TokenId>, // pair -> merged id
+    pub(crate) merge_map: FxHashMap<Pair, TokenId>, // pair -> merged id
 
     // Training-time index structures.
     //
@@ -37,10 +37,10 @@ pub struct BPE {
     //   1. "Which pair is currently most frequent?"
     //   2. "Where does that pair appear so we can rewrite those locations?"
     chains: Vec<WeightedChain>,
-    count_to_pairs: Vec<BTreeSet<Pair>>,     // frequency -> pairs
-    max_pair_count: u32,                     // largest non-empty frequency bucket
-    pair_counts: HashMap<Pair, u32>,         // pair -> frequency
-    pair_locs: HashMap<Pair, PairLocations>, // pair -> (chain_idx, node_pos)
+    count_to_pairs: Vec<FxHashSet<Pair>>, // frequency -> pairs
+    max_pair_count: u32,                  // largest non-empty frequency bucket
+    pair_counts: FxHashMap<Pair, u32>,    // pair -> frequency
+    pair_locs: FxHashMap<Pair, PairLocations>, // pair -> (chain_idx, node_pos)
 }
 
 impl BPE {
@@ -50,6 +50,7 @@ impl BPE {
 
     /// Builds a stable byte signature for a freshly split byte-level chunk so identical chunks can
     /// be deduplicated before training begins.
+    #[cfg(test)]
     fn chain_signature(chain: &Chain) -> Vec<u8> {
         chain
             .iter()
@@ -60,35 +61,62 @@ impl BPE {
             .collect()
     }
 
-    /// Splits a bounded batch of documents in parallel so training only retains one batch of
-    /// intermediate chains at a time.
-    fn split_docs_batch(&self, docs: &[String]) -> Vec<Vec<Chain>> {
+    /// Splits a bounded batch of documents in parallel, returning raw byte slices instead of
+    /// chains to avoid heap-allocating a [`Chain`] for every regex match (most of which will be
+    /// duplicates that only need their frequency bumped).
+    fn split_docs_batch_raw(&self, docs: &[String]) -> Vec<Vec<Vec<u8>>> {
         docs.par_iter()
-            .map(|doc| self.split_for_training(doc))
+            .map(|doc| self.split_for_training_raw(doc))
             .collect::<Vec<_>>()
     }
 
-    /// Folds a previously split batch into the deduplicated training-chain table.
+    /// Like [`split_for_training`] but returns raw byte slices instead of chains.
+    fn split_for_training_raw(&self, doc: impl AsRef<str>) -> Vec<Vec<u8>> {
+        let doc = doc.as_ref();
+        let mut chunks = Vec::new();
+        let mut cursor = 0;
+
+        if let Some(special_split_pattern) = &self.special_split_pattern {
+            for matched in special_split_pattern.find_iter(doc).filter_map(Result::ok) {
+                chunks.extend(
+                    self.split_pattern
+                        .find_iter(&doc[cursor..matched.start()])
+                        .filter_map(Result::ok)
+                        .map(|m| m.as_str().as_bytes().to_vec()),
+                );
+                cursor = matched.end();
+            }
+        }
+
+        chunks.extend(
+            self.split_pattern
+                .find_iter(&doc[cursor..])
+                .filter_map(Result::ok)
+                .map(|m| m.as_str().as_bytes().to_vec()),
+        );
+        chunks
+    }
+
+    /// Folds a batch of raw byte chunks into the deduplicated training-chain table.
     ///
-    /// Chunk order does not affect training because merges are learned from aggregated chunk
-    /// frequencies rather than document position.
-    fn ingest_split_batch(
+    /// Only creates a [`Chain`] for the first occurrence of each unique byte sequence.
+    /// Subsequent occurrences simply bump the frequency counter.
+    fn ingest_raw_batch(
         &mut self,
-        chain_indexes: &mut HashMap<Vec<u8>, ChainIndex>,
-        split_docs: Vec<Vec<Chain>>,
+        chain_indexes: &mut FxHashMap<Vec<u8>, ChainIndex>,
+        split_docs: Vec<Vec<Vec<u8>>>,
     ) {
-        for chains in split_docs {
-            for chain in chains {
-                let signature = Self::chain_signature(&chain);
-                if let Some(&chain_index) = chain_indexes.get(&signature) {
+        for chunks in split_docs {
+            for bytes in chunks {
+                if let Some(&chain_index) = chain_indexes.get(&bytes) {
                     self.chains[chain_index].frequency += 1;
                 } else {
                     let chain_index = self.chains.len();
                     self.chains.push(WeightedChain {
-                        chain,
+                        chain: Chain::new(&bytes),
                         frequency: 1,
                     });
-                    chain_indexes.insert(signature, chain_index);
+                    chain_indexes.insert(bytes, chain_index);
                 }
             }
         }
@@ -122,11 +150,11 @@ impl BPE {
         special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
     ) -> Result<Self, BPEError> {
         let split_pattern = Regex::new(split_pattern.as_ref()).map_err(BPEError::from)?;
-        let mut vocab: HashMap<TokenId, Vec<u8>> = (0..BASE_VOCAB_SIZE)
+        let mut vocab: FxHashMap<TokenId, Vec<u8>> = (0..BASE_VOCAB_SIZE)
             .map(|byte| (byte, vec![byte as u8]))
             .collect();
-        let mut special_token_map = HashMap::new();
-        let mut used_special_ids = HashSet::new();
+        let mut special_token_map = FxHashMap::default();
+        let mut used_special_ids = FxHashSet::default();
 
         for (token, token_id) in special_tokens {
             let token = token.into();
@@ -151,12 +179,12 @@ impl BPE {
             special_split_pattern,
             special_tokens: special_token_map,
             vocab,
-            merge_map: HashMap::new(),
+            merge_map: FxHashMap::default(),
             chains: Vec::new(),
-            count_to_pairs: vec![BTreeSet::new()],
+            count_to_pairs: vec![FxHashSet::default()],
             max_pair_count: 0,
-            pair_counts: HashMap::new(),
-            pair_locs: HashMap::new(),
+            pair_counts: FxHashMap::default(),
+            pair_locs: FxHashMap::default(),
         })
     }
 
@@ -164,7 +192,7 @@ impl BPE {
     ///
     /// Ordering by length prevents a short token like `<e>` from stealing the prefix of a longer
     /// token like `<eos>`.
-    fn build_special_token_pattern(special_tokens: &HashMap<String, TokenId>) -> Option<String> {
+    fn build_special_token_pattern(special_tokens: &FxHashMap<String, TokenId>) -> Option<String> {
         if special_tokens.is_empty() {
             return None;
         }
@@ -224,7 +252,7 @@ impl BPE {
         self.pair_counts.insert(pair, new_count);
         if self.count_to_pairs.len() <= new_count as usize {
             self.count_to_pairs
-                .resize_with(new_count as usize + 1, BTreeSet::new);
+                .resize_with(new_count as usize + 1, FxHashSet::default);
         }
         self.count_to_pairs[new_count as usize].insert(pair);
         self.max_pair_count = self.max_pair_count.max(new_count);
@@ -250,17 +278,17 @@ impl BPE {
     pub fn train(&mut self, vocab_size: TokenId, docs: impl IntoIterator<Item = impl AsRef<str>>) {
         self.reset_training_state();
 
-        let mut chain_indexes = HashMap::<Vec<u8>, ChainIndex>::new();
+        let mut chain_indexes = FxHashMap::<Vec<u8>, ChainIndex>::default();
         let mut split_batch = Vec::with_capacity(Self::SPLIT_BATCH_SIZE);
         for doc in docs {
             split_batch.push(doc.as_ref().to_owned());
             if split_batch.len() == Self::SPLIT_BATCH_SIZE {
-                self.ingest_split_batch(&mut chain_indexes, self.split_docs_batch(&split_batch));
+                self.ingest_raw_batch(&mut chain_indexes, self.split_docs_batch_raw(&split_batch));
                 split_batch.clear();
             }
         }
         if !split_batch.is_empty() {
-            self.ingest_split_batch(&mut chain_indexes, self.split_docs_batch(&split_batch));
+            self.ingest_raw_batch(&mut chain_indexes, self.split_docs_batch_raw(&split_batch));
         }
 
         // Free the document-splitting scratch space and dedup table before merge training so peak
@@ -284,15 +312,16 @@ impl BPE {
             }
         }
 
-        let reserved_ids: HashSet<_> = self.special_tokens.values().copied().collect();
+        let reserved_ids: FxHashSet<_> = self.special_tokens.values().copied().collect();
         for merged_id in
             (BASE_VOCAB_SIZE..vocab_size).filter(|token_id| !reserved_ids.contains(token_id))
         {
+            // Pick the lexicographically smallest pair from the max-frequency bucket to match
+            // the deterministic tie-breaking order of the original BTreeSet-based implementation.
             let Some(best_pair) = self
                 .count_to_pairs
                 .get(self.max_pair_count as usize)
-                .and_then(|bucket| bucket.iter().next())
-                .copied()
+                .and_then(|bucket| bucket.iter().copied().min())
             else {
                 break;
             };
@@ -306,26 +335,33 @@ impl BPE {
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
-            // Drain locations incrementally so training does not duplicate the full occurrence
-            // set for the hottest pair in a temporary `Vec`.
-            while let Some((chain_index, left_pos)) = self
+            // Drain all locations at once and sort for deterministic overlapping-pair handling.
+            let mut locations: Vec<_> = self
                 .pair_locs
-                .get(&best_pair)
-                .and_then(|locations| locations.first().copied())
-            {
-                let frequency = i64::from(chains[chain_index].frequency);
-                let Some(left_node) = chains[chain_index].chain.nodes[left_pos as usize] else {
+                .remove(&best_pair)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            locations.sort_unstable();
+
+            for (chain_index, left_pos) in locations {
+                let left_node = chains[chain_index].chain.nodes[left_pos as usize];
+                if left_node.is_tombstone() {
                     continue;
-                };
-                let Some(right_pos) = left_node.next else {
+                }
+                let right_pos = left_node.next;
+                if right_pos == NONE {
                     continue;
-                };
-                let Some(right_node) = chains[chain_index].chain.nodes[right_pos as usize] else {
+                }
+                let right_node = chains[chain_index].chain.nodes[right_pos as usize];
+                if right_node.is_tombstone() {
                     continue;
-                };
+                }
                 if (left_node.token_id, right_node.token_id) != best_pair {
                     continue;
                 }
+
+                let frequency = i64::from(chains[chain_index].frequency);
 
                 // Snapshot the neighborhood before splicing:
                 //
@@ -336,25 +372,25 @@ impl BPE {
                 // touch the merged token.
                 let prev = left_node.prev;
                 let next = right_node.next;
-                let prev_id = prev.map(|pos| {
-                    chains[chain_index].chain.nodes[pos as usize]
-                        .expect("previous node must exist")
-                        .token_id
-                });
-                let next_id = next.map(|pos| {
-                    chains[chain_index].chain.nodes[pos as usize]
-                        .expect("next node must exist")
-                        .token_id
-                });
+                let prev_id = if prev != NONE {
+                    Some(chains[chain_index].chain.nodes[prev as usize].token_id)
+                } else {
+                    None
+                };
+                let next_id = if next != NONE {
+                    Some(chains[chain_index].chain.nodes[next as usize].token_id)
+                } else {
+                    None
+                };
 
                 let new_pos = chains[chain_index]
                     .chain
                     .splice(left_pos, right_pos, merged_id);
 
                 self.adjust(best_pair, chain_index, left_pos, -frequency);
-                if let (Some(prev_id), Some(prev_pos)) = (prev_id, prev) {
-                    self.adjust((prev_id, best_pair.0), chain_index, prev_pos, -frequency);
-                    self.adjust((prev_id, merged_id), chain_index, prev_pos, frequency);
+                if let (Some(prev_id), true) = (prev_id, prev != NONE) {
+                    self.adjust((prev_id, best_pair.0), chain_index, prev, -frequency);
+                    self.adjust((prev_id, merged_id), chain_index, prev, frequency);
                 }
                 if let Some(next_id) = next_id {
                     self.adjust((best_pair.1, next_id), chain_index, right_pos, -frequency);
@@ -371,36 +407,75 @@ impl BPE {
     /// Using the lowest merge id reproduces the same merge priority as training order: earlier
     /// merges receive smaller ids and therefore win when multiple adjacent pairs are possible.
     pub fn encode(&self, doc: impl AsRef<str>) -> Vec<TokenId> {
-        let mut chains = self.split(doc);
+        let doc = doc.as_ref();
         let mut encoded = Vec::new();
+        // Scratch buffer reused across chunks to avoid per-chunk heap allocations.
+        let mut tokens = Vec::new();
+        let mut cursor = 0;
 
-        for chain in &mut chains {
-            loop {
-                let mut best: Option<(TokenId, NodePos, NodePos)> = None;
-                let mut previous: Option<(NodePos, TokenId)> = None;
-
-                for (pos, node) in chain.iter() {
-                    if let Some((prev_pos, prev_id)) = previous {
-                        let pair = (prev_id, node.token_id);
-                        if let Some(&merge_id) = self.merge_map.get(&pair)
-                            && best.is_none_or(|(best_id, _, _)| merge_id < best_id)
-                        {
-                            best = Some((merge_id, prev_pos, pos));
-                        }
-                    }
-                    previous = Some((pos, node.token_id));
+        if let Some(special_split_pattern) = &self.special_split_pattern {
+            for matched in special_split_pattern.find_iter(doc).filter_map(Result::ok) {
+                for normal_match in self
+                    .split_pattern
+                    .find_iter(&doc[cursor..matched.start()])
+                    .filter_map(Result::ok)
+                {
+                    self.encode_bytes_into(
+                        normal_match.as_str().as_bytes(),
+                        &mut tokens,
+                        &mut encoded,
+                    );
                 }
 
-                let Some((merge_id, left_pos, right_pos)) = best else {
-                    break;
-                };
-                chain.splice(left_pos, right_pos, merge_id);
-            }
+                if let Some(&token_id) = self.special_tokens.get(matched.as_str()) {
+                    encoded.push(token_id);
+                }
 
-            encoded.extend(chain.iter().map(|(_, node)| node.token_id));
+                cursor = matched.end();
+            }
+        }
+
+        for normal_match in self
+            .split_pattern
+            .find_iter(&doc[cursor..])
+            .filter_map(Result::ok)
+        {
+            self.encode_bytes_into(normal_match.as_str().as_bytes(), &mut tokens, &mut encoded);
         }
 
         encoded
+    }
+
+    /// Encodes a single byte-level chunk using a flat scratch buffer instead of a linked-list
+    /// chain.  The scratch `tokens` buffer is cleared and reused across calls so no per-chunk
+    /// heap allocation is required for short inputs.
+    fn encode_bytes_into(
+        &self,
+        bytes: &[u8],
+        tokens: &mut Vec<TokenId>,
+        output: &mut Vec<TokenId>,
+    ) {
+        tokens.clear();
+        tokens.extend(bytes.iter().map(|&b| TokenId::from(b)));
+
+        loop {
+            let mut best: Option<(TokenId, usize)> = None;
+            for i in 0..tokens.len().saturating_sub(1) {
+                let pair = (tokens[i], tokens[i + 1]);
+                if let Some(&merge_id) = self.merge_map.get(&pair)
+                    && best.is_none_or(|(best_id, _)| merge_id < best_id)
+                {
+                    best = Some((merge_id, i));
+                }
+            }
+            let Some((merge_id, pos)) = best else {
+                break;
+            };
+            tokens[pos] = merge_id;
+            tokens.remove(pos + 1);
+        }
+
+        output.extend_from_slice(tokens);
     }
 
     /// Decodes token ids back into bytes, skipping unknown ids.
@@ -416,19 +491,12 @@ impl BPE {
     ///
     /// Training learns merges from raw byte spans, so special tokens are excluded rather than
     /// materialized as chains.
+    #[cfg(test)]
     fn split_for_training(&self, doc: impl AsRef<str>) -> Vec<Chain> {
         self.split_impl(doc, false)
     }
 
-    /// Splits input text into independently-encodable chains.
-    ///
-    /// Special tokens act like pre-tokenized islands. Everything between them is split by the
-    /// normal regex, but the special-token literals themselves become single-node chains so they
-    /// never merge with surrounding text.
-    fn split(&self, doc: impl AsRef<str>) -> Vec<Chain> {
-        self.split_impl(doc, true)
-    }
-
+    #[cfg(test)]
     fn split_impl(&self, doc: impl AsRef<str>, include_special_tokens: bool) -> Vec<Chain> {
         let doc = doc.as_ref();
         let mut chains = Vec::new();
@@ -474,7 +542,7 @@ impl BPE {
         self.merge_map.clear();
         self.chains.clear();
         self.count_to_pairs.clear();
-        self.count_to_pairs.push(BTreeSet::new());
+        self.count_to_pairs.push(FxHashSet::default());
         self.max_pair_count = 0;
         self.pair_counts.clear();
         self.pair_locs.clear();
