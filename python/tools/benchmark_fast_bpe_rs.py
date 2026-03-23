@@ -27,6 +27,7 @@ GPT4_SPLIT_PATTERN = (
 VOCAB_SIZE = 4096
 RUNS = 5
 BYTES_PER_MB = 1024 * 1024
+NANOSECONDS_PER_SECOND = 1_000_000_000
 DATASET_NAME = "Salesforce/wikitext"
 DATASET_CONFIG = "wikitext-2-raw-v1"
 MEMORY_PROFILER_INTERVAL_SECONDS = 0.005
@@ -71,37 +72,54 @@ def _measure_phase(
     runs: int,
     action: Callable[[], object],
 ) -> dict[str, object]:
-    wall_times: list[float] = []
-    peak_mbs: list[float] = []
+    # Warmup: one untimed run to populate caches and trigger lazy initialization.
+    action()
 
+    # --- Speed pass (isolated from memory-profiling overhead) ---
+    wall_times: list[float] = []
     for _ in range(runs):
         gc.collect()
-        baseline_mb = memory_usage(
-            -1,
-            interval=MEMORY_PROFILER_INTERVAL_SECONDS,
-            timeout=1,
-            max_usage=True,
-        )
-        started = time.perf_counter()
+        gc.disable()
+        try:
+            start_ns = time.perf_counter_ns()
+            action()
+            elapsed_ns = time.perf_counter_ns() - start_ns
+        finally:
+            gc.enable()
+        wall_times.append(elapsed_ns / NANOSECONDS_PER_SECOND)
+
+    # --- Memory pass (separate runs so profiling overhead cannot skew timings) ---
+    process = psutil.Process()
+    peak_mbs: list[float] = []
+    for _ in range(runs):
+        gc.collect()
+        baseline_mb = process.memory_info().rss / BYTES_PER_MB
         peak_mb = memory_usage(
             (action, (), {}),
             interval=MEMORY_PROFILER_INTERVAL_SECONDS,
             max_usage=True,
             multiprocess=False,
         )
-        wall_times.append(time.perf_counter() - started)
-        peak_mbs.append(max(0.0, float(peak_mb) - float(baseline_mb)))
+        peak_mbs.append(max(0.0, float(peak_mb) - baseline_mb))
 
-    median_wall_time = statistics.median(wall_times)
+    median_wall = statistics.median(wall_times)
+    input_mb = input_bytes / BYTES_PER_MB
     return {
         "name": name,
         "input_bytes": input_bytes,
         "runs": runs,
-        "wall_time_seconds_median": round(median_wall_time, 6),
-        "throughput_mb_s": round((input_bytes / BYTES_PER_MB) / median_wall_time, 6),
-        "peak_ram_mb": round(max(peak_mbs), 6),
-        "wall_time_seconds_runs": [round(value, 6) for value in wall_times],
-        "peak_ram_mb_runs": [round(value, 6) for value in peak_mbs],
+        "wall_time_seconds_median": round(median_wall, 6),
+        "wall_time_seconds_mean": round(statistics.mean(wall_times), 6),
+        "wall_time_seconds_stdev": (
+            round(statistics.stdev(wall_times), 6) if runs > 1 else 0.0
+        ),
+        "wall_time_seconds_min": round(min(wall_times), 6),
+        "wall_time_seconds_max": round(max(wall_times), 6),
+        "throughput_mb_s": round(input_mb / median_wall, 6),
+        "peak_ram_mb_median": round(statistics.median(peak_mbs), 6),
+        "peak_ram_mb_max": round(max(peak_mbs), 6),
+        "wall_time_seconds_runs": [round(v, 6) for v in wall_times],
+        "peak_ram_mb_runs": [round(v, 6) for v in peak_mbs],
     }
 
 
