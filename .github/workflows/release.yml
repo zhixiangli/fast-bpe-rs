@@ -1,14 +1,7 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
-    inputs:
-      tag_name:
-        description: "Re-release a specific tag (e.g., v0.1.2). Used to retry failed releases."
-        required: true
 
 concurrency:
   group: release
@@ -17,7 +10,6 @@ concurrency:
 jobs:
   release-please:
     name: Prepare release
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -35,25 +27,9 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - name: Draft the release until artifacts are ready
-        if: steps.release.outputs.release_created == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          if [ "$(gh api "repos/$GH_REPO/releases/tags/${{ steps.release.outputs.tag_name }}" --jq '.immutable')" = "true" ]; then
-            echo "Release ${{ steps.release.outputs.tag_name }} is immutable; skipping draft edit."
-            exit 0
-          fi
-
-          gh release edit "${{ steps.release.outputs.tag_name }}" --draft
-
   build-distributions:
     name: Build ${{ matrix.name }}
-    if: >-
-      !cancelled() && !failure() &&
-      ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
-      github.event_name == 'workflow_dispatch')
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ${{ matrix.os }}
     needs: release-please
     strategy:
@@ -80,13 +56,11 @@ jobs:
             artifact_name: sdist
             command: sdist
             args: --out dist
-    env:
-      RELEASE_REF: ${{ needs.release-please.outputs.sha || inputs.tag_name }}
     steps:
       - name: Check out release commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ env.RELEASE_REF }}
+          ref: ${{ needs.release-please.outputs.sha }}
 
       - name: Build distribution
         uses: PyO3/maturin-action@v1
@@ -102,10 +76,7 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    if: >-
-      !cancelled() && !failure() &&
-      ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
-      github.event_name == 'workflow_dispatch')
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     needs:
       - release-please
@@ -117,9 +88,8 @@ jobs:
       name: pypi
       url: https://pypi.org/p/fast-bpe-rs
     env:
-      TAG_NAME: ${{ needs.release-please.outputs.tag_name || inputs.tag_name }}
+      TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GH_REPO: ${{ github.repository }}
     steps:
       - name: Download wheel artifacts
         uses: actions/download-artifact@v8
@@ -140,12 +110,4 @@ jobs:
           skip-existing: true
 
       - name: Publish GitHub release artifacts
-        run: |
-          if [ "$(gh api "repos/$GH_REPO/releases/tags/$TAG_NAME" --jq '.immutable')" = "true" ]; then
-            echo "Release $TAG_NAME is immutable; skipping GitHub release asset upload."
-            exit 0
-          fi
-
-          gh release edit "$TAG_NAME" --draft=true
-          gh release upload "$TAG_NAME" dist/* --clobber
-          gh release edit "$TAG_NAME" --draft=false
+        run: gh release upload "$TAG_NAME" dist/* --clobber
