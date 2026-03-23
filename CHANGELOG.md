@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.6](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.1.5...v0.1.6) (2026-03-23)
+
+
+### Bug Fixes
+
+* restore full release flow for manual reruns ([#58](https://github.com/zhixiangli/fast-bpe-rs/issues/58)) ([059bbe2](https://github.com/zhixiangli/fast-bpe-rs/commit/059bbe29eb20aa3448ab731915be8c007b9ea1f5))
+
 ## [0.1.5](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.1.4...v0.1.5) (2026-03-21)
 
 
