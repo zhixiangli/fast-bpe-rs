@@ -53,6 +53,7 @@ After training on WikiText, this paragraph is encoded into token ids and decoded
     let decoded_bytes = bpe.decode(encoded.iter().copied());
     let decoded_text = String::from_utf8(decoded_bytes)?;
     println!("\nDecoded paragraph:\n{decoded_text}");
+    println!("\nRoundtrip exact match: {}", paragraph == decoded_text);
 
     Ok(())
 }
