@@ -43,5 +43,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Finished BPE training up to vocab size {TARGET_VOCAB_SIZE}");
     println!("Training elapsed: {:.3?}", train_elapsed);
 
+    let paragraph = "Fast-BPE-RS now supports both library usage and `cargo run` demos. \
+After training on WikiText, this paragraph is encoded into token ids and decoded back into text.";
+    println!("\nOriginal paragraph:\n{paragraph}");
+
+    let encoded = bpe.encode(paragraph);
+    println!("\nEncoded token ids:\n{encoded:?}");
+
+    let decoded_bytes = bpe.decode(encoded.iter().copied());
+    let decoded_text = String::from_utf8(decoded_bytes)?;
+    println!("\nDecoded paragraph:\n{decoded_text}");
+    println!("\nRoundtrip exact match: {}", paragraph == decoded_text);
+
     Ok(())
 }
