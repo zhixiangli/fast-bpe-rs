@@ -21,7 +21,7 @@ fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
 
     let docs = rows
         .filter_map(|row| row.ok())
-        .filter_map(|row| row.get_string(0).ok().map(str::trim).map(str::to_owned))
+        .filter_map(|row| row.get_string(0).ok().map(|text| text.trim().to_owned()))
         .filter(|text| !text.is_empty())
         .collect();
 
