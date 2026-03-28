@@ -688,4 +688,115 @@ mod tests {
             vec![b'a' as u32, 300, 301, b'a' as u32]
         );
     }
+
+    #[test]
+    fn split_includes_special_tokens_as_single_node_chains() {
+        let bpe = BPE::new_with_special_tokens(r"\S+", [("<pad>", 300), ("<eos>", 301)]);
+
+        let chains = bpe.split("hi<pad>there<eos>");
+        let tokens_per_chain: Vec<Vec<TokenId>> = chains
+            .iter()
+            .map(|chain| chain.iter().map(|(_, node)| node.token_id).collect())
+            .collect();
+
+        assert_eq!(
+            tokens_per_chain,
+            vec![
+                vec![b'h' as u32, b'i' as u32],
+                vec![300],
+                vec![b't' as u32, b'h' as u32, b'e' as u32, b'r' as u32, b'e' as u32],
+                vec![301]
+            ]
+        );
+    }
+
+    #[test]
+    fn build_special_token_pattern_prefers_longer_tokens_before_prefixes() {
+        let bpe = BPE::new_with_special_tokens(r"\S+", [("<e>", 400), ("<eos>", 401)]);
+
+        assert_eq!(bpe.encode("<eos><e>"), vec![401, 400]);
+    }
+
+    #[test]
+    fn decode_concatenates_known_tokens_and_skips_unknown_ids() {
+        let bpe = BPE::new("(?s).+");
+
+        let decoded = bpe.decode([b'a' as u32, 999_999, b'b' as u32, 123_456]);
+
+        assert_eq!(decoded, b"ab");
+    }
+
+    #[test]
+    fn train_skips_reserved_special_token_ids_when_assigning_merges() {
+        let mut bpe = BPE::new_with_special_tokens("(?s).+", [("<pad>", 256), ("<eos>", 257)]);
+        bpe.train(260, ["abab"]);
+
+        assert_eq!(bpe.merge_map.get(&(b'a' as u32, b'b' as u32)), Some(&258));
+        assert_eq!(bpe.vocab.get(&256), Some(&b"<pad>".to_vec()));
+        assert_eq!(bpe.vocab.get(&257), Some(&b"<eos>".to_vec()));
+        assert_eq!(bpe.encode("<pad>ab<eos>"), vec![256, 258, 257]);
+    }
+
+    #[test]
+    fn train_stops_when_no_mergeable_pairs_exist() {
+        let mut bpe = BPE::new("(?s).+");
+        bpe.train(300, ["a", "b", "c"]);
+
+        assert!(bpe.merge_map.is_empty());
+        assert_eq!(bpe.vocab.len() as u32, BASE_VOCAB_SIZE);
+        assert_eq!(
+            bpe.encode("abc"),
+            vec![b'a' as u32, b'b' as u32, b'c' as u32]
+        );
+    }
+
+    #[test]
+    fn encode_returns_only_special_tokens_when_input_is_only_specials() {
+        let bpe = BPE::new_with_special_tokens(r"\S+", [("<pad>", 600), ("<eos>", 601)]);
+
+        assert_eq!(bpe.encode("<pad><eos><pad>"), vec![600, 601, 600]);
+    }
+
+    #[test]
+    fn train_deduplicates_chunks_across_split_batches() {
+        let mut bpe = BPE::new("(?s).+");
+        let docs = std::iter::repeat_n("xy", BPE::SPLIT_BATCH_SIZE + 17);
+
+        bpe.train(257, docs);
+
+        assert_eq!(bpe.chains.len(), 1);
+        assert_eq!(bpe.chains[0].frequency as usize, BPE::SPLIT_BATCH_SIZE + 17);
+        assert_eq!(bpe.vocab.get(&256), Some(&b"xy".to_vec()));
+    }
+
+    #[test]
+    fn reset_training_state_preserves_special_tokens_between_retrains() {
+        let mut bpe = BPE::new_with_special_tokens("(?s).+", [("<pad>", 700)]);
+        bpe.train(258, ["abab"]);
+        assert!(bpe.vocab.contains_key(&700));
+
+        bpe.train(258, ["cdcd"]);
+
+        assert_eq!(bpe.vocab.get(&700), Some(&b"<pad>".to_vec()));
+        assert_eq!(bpe.merge_map.get(&(b'c' as u32, b'd' as u32)), Some(&256));
+        assert_eq!(bpe.encode("<pad>cd"), vec![700, 256]);
+    }
+
+    #[test]
+    fn split_for_training_ignores_special_tokens_even_when_adjacent() {
+        let bpe = BPE::new_with_special_tokens(r"\S+", [("<s>", 800), ("</s>", 801)]);
+
+        let chains = bpe.split_for_training("<s>hello</s><s>world</s>");
+        let signatures: Vec<Vec<u8>> = chains.iter().map(BPE::chain_signature).collect();
+
+        assert_eq!(signatures, vec![b"hello".to_vec(), b"world".to_vec()]);
+    }
+
+    #[test]
+    fn encode_of_empty_string_is_empty_even_with_special_tokens_configured() {
+        let bpe = BPE::new_with_special_tokens(r"\S+", [("<pad>", 900)]);
+
+        assert!(bpe.encode("").is_empty());
+        assert!(bpe.split("").is_empty());
+    }
 }
