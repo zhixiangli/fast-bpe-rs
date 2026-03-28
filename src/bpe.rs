@@ -236,6 +236,9 @@ impl BPE {
             return;
         }
 
+        // The hottest pair is always drained from the front in insertion order, so most removals
+        // hit the queue head. A linear fallback keeps the bookkeeping correct for neighboring pairs
+        // whose locations are deleted out of order after a splice.
         if locations.front().copied() == Some((chain_index, pos)) {
             locations.pop_front();
         } else if let Some(index) = locations
