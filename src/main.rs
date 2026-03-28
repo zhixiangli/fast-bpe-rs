@@ -2,6 +2,7 @@ use fast_bpe_rs::BPE;
 use hf_hub::api::sync::Api;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::RowAccessor;
+use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::time::Instant;
@@ -9,9 +10,24 @@ use std::time::Instant;
 const DATASET_REPO: &str = "Salesforce/wikitext";
 const TRAIN_FILE: &str = "wikitext-2-raw-v1/train-00000-of-00001.parquet";
 const TARGET_VOCAB_SIZE: u32 = 5_000;
+const DEFAULT_MAX_TRAIN_DOCS: usize = 2_048;
 const SPLIT_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
-fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
+fn limit_training_docs(docs: &mut Vec<String>, max_docs: usize) {
+    if docs.len() > max_docs {
+        docs.truncate(max_docs);
+    }
+}
+
+fn max_train_docs() -> usize {
+    env::var("FAST_BPE_RS_MAX_TRAIN_DOCS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(DEFAULT_MAX_TRAIN_DOCS)
+}
+
+fn load_wikitext_train_docs(max_docs: usize) -> Result<Vec<String>, Box<dyn Error>> {
     let api = Api::new()?;
     let train_path = api.dataset(DATASET_REPO.to_owned()).get(TRAIN_FILE)?;
 
@@ -19,17 +35,19 @@ fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
     let parquet = SerializedFileReader::new(file)?;
     let rows = parquet.get_row_iter(None)?;
 
-    let docs = rows
+    let mut docs = rows
         .filter_map(|row| row.ok())
         .filter_map(|row| row.get_string(0).ok().map(|text| text.trim().to_owned()))
         .filter(|text| !text.is_empty())
-        .collect();
+        .collect::<Vec<_>>();
+    limit_training_docs(&mut docs, max_docs);
 
     Ok(docs)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let docs = load_wikitext_train_docs()?;
+    let max_docs = max_train_docs();
+    let docs = load_wikitext_train_docs(max_docs)?;
     let mut bpe = BPE::try_new(SPLIT_PATTERN)?;
 
     let train_started = Instant::now();
@@ -40,6 +58,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         "Loaded {} documents from {DATASET_REPO}/{TRAIN_FILE}",
         docs.len()
     );
+    if docs.len() == max_docs {
+        println!(
+            "Training demo limited to {max_docs} documents (override with FAST_BPE_RS_MAX_TRAIN_DOCS)"
+        );
+    }
     println!("Finished BPE training up to vocab size {TARGET_VOCAB_SIZE}");
     println!("Training elapsed: {:.3?}", train_elapsed);
 
@@ -56,4 +79,19 @@ After training on WikiText, this paragraph is encoded into token ids and decoded
     println!("\nRoundtrip exact match: {}", paragraph == decoded_text);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::limit_training_docs;
+
+    #[test]
+    fn limit_training_docs_truncates_only_when_needed() {
+        let mut docs = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        limit_training_docs(&mut docs, 2);
+        assert_eq!(docs, vec!["a", "b"]);
+
+        limit_training_docs(&mut docs, 4);
+        assert_eq!(docs, vec!["a", "b"]);
+    }
 }

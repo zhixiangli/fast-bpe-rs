@@ -1,6 +1,6 @@
 use crate::chain::Chain;
 use crate::error::BPEError;
-use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, TokenId};
+use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NONE, NodePos, Pair, PairLocations, TokenId};
 use fancy_regex::{Regex, escape};
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -81,9 +81,10 @@ impl BPE {
             for chain in chains {
                 let signature = Self::chain_signature(&chain);
                 if let Some(&chain_index) = chain_indexes.get(&signature) {
-                    self.chains[chain_index].frequency += 1;
+                    self.chains[chain_index as usize].frequency += 1;
                 } else {
-                    let chain_index = self.chains.len();
+                    let chain_index = ChainIndex::try_from(self.chains.len())
+                        .expect("training chain count exceeds u32");
                     self.chains.push(WeightedChain {
                         chain,
                         frequency: 1,
@@ -188,7 +189,7 @@ impl BPE {
     /// ```text
     /// pair_counts[(A, B)] = 3
     /// count_to_pairs[3]   = {(A, B), ...}
-    /// pair_locs[(A, B)]   = {(chain 0, pos 4), (chain 2, pos 1), ...}
+    /// pair_locs[(A, B)]   = [(chain 0, pos 4), (chain 2, pos 1), ...]
     /// ```
     ///
     /// When a merge removes or creates a pair we update all three views together so the next
@@ -231,9 +232,17 @@ impl BPE {
 
         let locations = self.pair_locs.entry(pair).or_default();
         if delta > 0 {
-            locations.insert((chain_index, pos));
-        } else {
-            locations.remove(&(chain_index, pos));
+            locations.push_back((chain_index, pos));
+            return;
+        }
+
+        if locations.front().copied() == Some((chain_index, pos)) {
+            locations.pop_front();
+        } else if let Some(index) = locations
+            .iter()
+            .position(|&location| location == (chain_index, pos))
+        {
+            locations.remove(index);
         }
     }
 
@@ -274,6 +283,8 @@ impl BPE {
         // Seed the pair-frequency index with every currently-adjacent pair without
         // materializing an extra per-chain node snapshot.
         for (chain_index, weighted_chain) in chains.iter().enumerate() {
+            let chain_index =
+                ChainIndex::try_from(chain_index).expect("training chain index exceeds u32");
             let frequency = i64::from(weighted_chain.frequency);
             let mut previous = None;
             for (pos, node) in weighted_chain.chain.iter() {
@@ -298,11 +309,11 @@ impl BPE {
             };
 
             // Materialize the merged token bytes so decoding remains a simple table lookup.
-            let new_bytes = [
-                self.vocab[&best_pair.0].as_slice(),
-                self.vocab[&best_pair.1].as_slice(),
-            ]
-            .concat();
+            let left_bytes = &self.vocab[&best_pair.0];
+            let right_bytes = &self.vocab[&best_pair.1];
+            let mut new_bytes = Vec::with_capacity(left_bytes.len() + right_bytes.len());
+            new_bytes.extend_from_slice(left_bytes);
+            new_bytes.extend_from_slice(right_bytes);
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
@@ -311,18 +322,22 @@ impl BPE {
             while let Some((chain_index, left_pos)) = self
                 .pair_locs
                 .get(&best_pair)
-                .and_then(|locations| locations.first().copied())
+                .and_then(|locations| locations.front().copied())
             {
+                let chain_index = chain_index as usize;
                 let frequency = i64::from(chains[chain_index].frequency);
-                let Some(left_node) = chains[chain_index].chain.nodes[left_pos as usize] else {
+                let left_node = chains[chain_index].chain.nodes[left_pos as usize];
+                if left_node.token_id == NONE {
                     continue;
-                };
-                let Some(right_pos) = left_node.next else {
+                }
+                let right_pos = left_node.next;
+                if right_pos == NONE {
                     continue;
-                };
-                let Some(right_node) = chains[chain_index].chain.nodes[right_pos as usize] else {
+                }
+                let right_node = chains[chain_index].chain.nodes[right_pos as usize];
+                if right_node.token_id == NONE {
                     continue;
-                };
+                }
                 if (left_node.token_id, right_node.token_id) != best_pair {
                     continue;
                 }
@@ -336,29 +351,43 @@ impl BPE {
                 // touch the merged token.
                 let prev = left_node.prev;
                 let next = right_node.next;
-                let prev_id = prev.map(|pos| {
-                    chains[chain_index].chain.nodes[pos as usize]
-                        .expect("previous node must exist")
-                        .token_id
-                });
-                let next_id = next.map(|pos| {
-                    chains[chain_index].chain.nodes[pos as usize]
-                        .expect("next node must exist")
-                        .token_id
-                });
+                let prev_id =
+                    (prev != NONE).then(|| chains[chain_index].chain.nodes[prev as usize].token_id);
+                let next_id =
+                    (next != NONE).then(|| chains[chain_index].chain.nodes[next as usize].token_id);
 
                 let new_pos = chains[chain_index]
                     .chain
                     .splice(left_pos, right_pos, merged_id);
 
-                self.adjust(best_pair, chain_index, left_pos, -frequency);
-                if let (Some(prev_id), Some(prev_pos)) = (prev_id, prev) {
-                    self.adjust((prev_id, best_pair.0), chain_index, prev_pos, -frequency);
-                    self.adjust((prev_id, merged_id), chain_index, prev_pos, frequency);
+                self.adjust(best_pair, chain_index as ChainIndex, left_pos, -frequency);
+                if let Some(prev_id) = prev_id {
+                    self.adjust(
+                        (prev_id, best_pair.0),
+                        chain_index as ChainIndex,
+                        prev,
+                        -frequency,
+                    );
+                    self.adjust(
+                        (prev_id, merged_id),
+                        chain_index as ChainIndex,
+                        prev,
+                        frequency,
+                    );
                 }
                 if let Some(next_id) = next_id {
-                    self.adjust((best_pair.1, next_id), chain_index, right_pos, -frequency);
-                    self.adjust((merged_id, next_id), chain_index, new_pos, frequency);
+                    self.adjust(
+                        (best_pair.1, next_id),
+                        chain_index as ChainIndex,
+                        right_pos,
+                        -frequency,
+                    );
+                    self.adjust(
+                        (merged_id, next_id),
+                        chain_index as ChainIndex,
+                        new_pos,
+                        frequency,
+                    );
                 }
             }
         }
