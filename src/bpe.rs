@@ -704,7 +704,13 @@ mod tests {
             vec![
                 vec![b'h' as u32, b'i' as u32],
                 vec![300],
-                vec![b't' as u32, b'h' as u32, b'e' as u32, b'r' as u32, b'e' as u32],
+                vec![
+                    b't' as u32,
+                    b'h' as u32,
+                    b'e' as u32,
+                    b'r' as u32,
+                    b'e' as u32
+                ],
                 vec![301]
             ]
         );
