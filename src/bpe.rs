@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(bpe.chains[0].frequency, 3);
         assert_eq!(bpe.vocab.get(&256), Some(&b"he".to_vec()));
         assert_eq!(bpe.vocab.get(&257), Some(&b"the".to_vec()));
-        assert!(bpe.pair_info.get(&(b't' as u32, b'h' as u32)).is_none());
+        assert!(!bpe.pair_info.contains_key(&(b't' as u32, b'h' as u32)));
         assert_eq!(bpe.encode("the the"), vec![257, 257]);
     }
 
