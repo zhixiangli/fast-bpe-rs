@@ -226,4 +226,92 @@ mod tests {
         assert!(chain.nodes[1].is_none());
         assert!(chain.nodes[2].is_none());
     }
+
+    #[test]
+    fn from_token_id_creates_single_node_chain() {
+        let chain = Chain::from_token_id(42);
+        let nodes: Vec<_> = chain.iter().collect();
+
+        assert_eq!(chain.head, Some(0));
+        assert_eq!(chain.nodes.len(), 1);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].0, 0);
+        assert_eq!(nodes[0].1.token_id, 42);
+        assert_eq!(nodes[0].1.prev, None);
+        assert_eq!(nodes[0].1.next, None);
+    }
+
+    #[test]
+    fn splice_on_two_node_chain_produces_single_live_node() {
+        let mut chain = Chain::new(b"ab");
+
+        let merged_pos = chain.splice(0, 1, 300);
+        let nodes: Vec<_> = chain.iter().collect();
+
+        assert_eq!(merged_pos, 0);
+        assert_eq!(chain.head, Some(0));
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].0, 0);
+        assert_eq!(nodes[0].1.token_id, 300);
+        assert_eq!(nodes[0].1.prev, None);
+        assert_eq!(nodes[0].1.next, None);
+        assert!(chain.nodes[1].is_none());
+    }
+
+    #[test]
+    fn splice_updates_tail_when_merging_last_pair() {
+        let mut chain = Chain::new(b"abc");
+
+        let merged_pos = chain.splice(1, 2, 500);
+        let nodes: Vec<(NodePos, u32)> = chain
+            .iter()
+            .map(|(pos, node)| (pos, node.token_id))
+            .collect();
+
+        assert_eq!(merged_pos, 1);
+        assert_eq!(nodes, vec![(0, b'a' as u32), (1, 500)]);
+        assert_eq!(chain.nodes[0].expect("head should exist").next, Some(1));
+        let tail = chain.nodes[1].expect("merged tail should exist");
+        assert_eq!(tail.prev, Some(0));
+        assert_eq!(tail.next, None);
+        assert!(chain.nodes[2].is_none());
+    }
+
+    #[test]
+    fn iter_follows_updated_links_after_multiple_splices() {
+        let mut chain = Chain::new(b"abcde");
+
+        let first = chain.splice(1, 2, 600);
+        let second = chain.splice(first, 3, 601);
+
+        let nodes: Vec<(NodePos, u32)> = chain
+            .iter()
+            .map(|(pos, node)| (pos, node.token_id))
+            .collect();
+
+        assert_eq!(second, 1);
+        assert_eq!(nodes, vec![(0, b'a' as u32), (1, 601), (4, b'e' as u32)]);
+        assert_eq!(chain.nodes[0].expect("head should exist").next, Some(1));
+        assert_eq!(chain.nodes[4].expect("tail should exist").prev, Some(1));
+        assert!(chain.nodes[2].is_none());
+        assert!(chain.nodes[3].is_none());
+    }
+
+    #[test]
+    fn splice_keeps_head_when_merging_non_head_pair() {
+        let mut chain = Chain::new(b"abcd");
+
+        chain.splice(2, 3, 700);
+        let nodes: Vec<(NodePos, u32)> = chain
+            .iter()
+            .map(|(pos, node)| (pos, node.token_id))
+            .collect();
+
+        assert_eq!(chain.head, Some(0));
+        assert_eq!(nodes, vec![(0, b'a' as u32), (1, b'b' as u32), (2, 700)]);
+        assert_eq!(chain.nodes[1].expect("node 1 should exist").next, Some(2));
+        assert_eq!(chain.nodes[2].expect("node 2 should exist").prev, Some(1));
+        assert_eq!(chain.nodes[2].expect("node 2 should exist").next, None);
+        assert!(chain.nodes[3].is_none());
+    }
 }
