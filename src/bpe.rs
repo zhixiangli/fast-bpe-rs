@@ -368,13 +368,25 @@ impl BPE {
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
-            // Drain locations incrementally so training does not duplicate the full occurrence
-            // set for the hottest pair in a temporary `Vec`.
-            while let Some((chain_index, left_pos)) = self
+            let best_pair_locations: Vec<_> = self
                 .pair_locs
-                .get(&best_pair)
-                .and_then(|locations| locations.first().copied())
-            {
+                .remove(&best_pair)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+
+            if let Some(best_pair_count) = self.pair_counts.remove(&best_pair) {
+                self.count_to_pairs[best_pair_count as usize].remove(&best_pair);
+                if self.max_pair_count == best_pair_count {
+                    while self.max_pair_count > 0
+                        && self.count_to_pairs[self.max_pair_count as usize].is_empty()
+                    {
+                        self.max_pair_count -= 1;
+                    }
+                }
+            }
+
+            for (chain_index, left_pos) in best_pair_locations {
                 let frequency = i64::from(chains[chain_index].frequency);
                 let Some(left_node) = chains[chain_index].chain.nodes[left_pos as usize] else {
                     continue;
@@ -413,13 +425,18 @@ impl BPE {
                     .chain
                     .splice(left_pos, right_pos, merged_id);
 
-                self.adjust(best_pair, chain_index, left_pos, -frequency);
                 if let (Some(prev_id), Some(prev_pos)) = (prev_id, prev) {
-                    self.adjust((prev_id, best_pair.0), chain_index, prev_pos, -frequency);
+                    let left_neighbor = (prev_id, best_pair.0);
+                    if left_neighbor != best_pair {
+                        self.adjust(left_neighbor, chain_index, prev_pos, -frequency);
+                    }
                     self.adjust((prev_id, merged_id), chain_index, prev_pos, frequency);
                 }
                 if let Some(next_id) = next_id {
-                    self.adjust((best_pair.1, next_id), chain_index, right_pos, -frequency);
+                    let right_neighbor = (best_pair.1, next_id);
+                    if right_neighbor != best_pair {
+                        self.adjust(right_neighbor, chain_index, right_pos, -frequency);
+                    }
                     self.adjust((merged_id, next_id), chain_index, new_pos, frequency);
                 }
             }
