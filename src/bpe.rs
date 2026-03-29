@@ -4,9 +4,9 @@ use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, Se
 use ahash::AHashMap;
 use fancy_regex::{Regex, escape};
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
 #[derive(Debug)]
@@ -46,7 +46,7 @@ pub struct BPE {
     //   1. "Which pair is currently most frequent?"
     //   2. "Where does that pair appear so we can rewrite those locations?"
     chains: Vec<WeightedChain>,
-    count_to_pairs: Vec<BTreeSet<Pair>>,  // frequency -> pairs
+    count_to_pairs: Vec<FxHashSet<Pair>>, // frequency -> pairs
     max_pair_count: u32,                  // largest non-empty frequency bucket
     pair_info: FxHashMap<Pair, PairInfo>, // pair -> {frequency, (chain_idx, node_pos)}
 }
@@ -229,7 +229,7 @@ impl BPE {
             vocab,
             merge_map: HashMap::new(),
             chains: Vec::new(),
-            count_to_pairs: vec![BTreeSet::new()],
+            count_to_pairs: vec![FxHashSet::default()],
             max_pair_count: 0,
             pair_info: FxHashMap::default(),
         })
@@ -267,7 +267,7 @@ impl BPE {
     /// ```
     ///
     /// When a merge removes or creates a pair we update all three views together so the next
-    /// training step can still find the globally most frequent pair in `O(log n)` map time.
+    /// training step can still find the globally most frequent pair in near-constant expected time.
     fn adjust(&mut self, pair: Pair, chain_index: ChainIndex, pos: NodePos, delta: i64) {
         let mut should_remove_pair = false;
         let (old_count, new_count) = {
@@ -314,7 +314,7 @@ impl BPE {
 
         if self.count_to_pairs.len() <= new_count as usize {
             self.count_to_pairs
-                .resize_with(new_count as usize + 1, BTreeSet::new);
+                .resize_with(new_count as usize + 1, FxHashSet::default);
         }
         self.count_to_pairs[new_count as usize].insert(pair);
         self.max_pair_count = self.max_pair_count.max(new_count);
@@ -348,7 +348,7 @@ impl BPE {
                 .max()
                 .unwrap_or_default();
             self.count_to_pairs
-                .resize_with(self.max_pair_count as usize + 1, BTreeSet::new);
+                .resize_with(self.max_pair_count as usize + 1, FxHashSet::default);
 
             for (pair, (count, locations)) in initial_pair_stats {
                 self.pair_info.insert(
@@ -369,7 +369,7 @@ impl BPE {
             let Some(best_pair) = self
                 .count_to_pairs
                 .get(self.max_pair_count as usize)
-                .and_then(|bucket| bucket.iter().next())
+                .and_then(|bucket| bucket.iter().min())
                 .copied()
             else {
                 break;
@@ -559,7 +559,7 @@ impl BPE {
         self.merge_map.clear();
         self.chains.clear();
         self.count_to_pairs.clear();
-        self.count_to_pairs.push(BTreeSet::new());
+        self.count_to_pairs.push(FxHashSet::default());
         self.max_pair_count = 0;
         self.pair_info.clear();
     }
