@@ -718,12 +718,25 @@ mod tests {
     }
 
     #[test]
-    fn decode_concatenates_known_tokens_and_skips_unknown_ids() {
-        let bpe = BPE::new("(?s).+");
+    fn split_preserves_document_order_across_regular_and_special_segments() {
+        let bpe = BPE::new_with_special_tokens(r"\S+", [("<pad>", 300), ("<eos>", 301)]);
 
-        let decoded = bpe.decode([b'a' as u32, 999_999, b'b' as u32, 123_456]);
+        let chains = bpe.split("x<eos>y<pad>z");
+        let tokens_per_chain: Vec<Vec<TokenId>> = chains
+            .iter()
+            .map(|chain| chain.iter().map(|(_, node)| node.token_id).collect())
+            .collect();
 
-        assert_eq!(decoded, b"ab");
+        assert_eq!(
+            tokens_per_chain,
+            vec![
+                vec![b'x' as u32],
+                vec![301],
+                vec![b'y' as u32],
+                vec![300],
+                vec![b'z' as u32]
+            ]
+        );
     }
 
     #[test]
@@ -783,13 +796,13 @@ mod tests {
     }
 
     #[test]
-    fn split_for_training_ignores_special_tokens_even_when_adjacent() {
-        let bpe = BPE::new_with_special_tokens(r"\S+", [("<s>", 800), ("</s>", 801)]);
+    fn train_uses_stable_pair_order_when_frequencies_tie() {
+        let mut bpe = BPE::new("\\S+");
+        bpe.train(258, ["ab ac"]);
 
-        let chains = bpe.split_for_training("<s>hello</s><s>world</s>");
-        let signatures: Vec<Vec<u8>> = chains.iter().map(BPE::chain_signature).collect();
-
-        assert_eq!(signatures, vec![b"hello".to_vec(), b"world".to_vec()]);
+        assert_eq!(bpe.merge_map.get(&(b'a' as u32, b'b' as u32)), Some(&256));
+        assert_eq!(bpe.merge_map.get(&(b'a' as u32, b'c' as u32)), Some(&257));
+        assert_eq!(bpe.encode("ab ac"), vec![256, 257]);
     }
 
     #[test]
