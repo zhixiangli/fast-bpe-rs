@@ -496,8 +496,8 @@ dependencies = [
  "parquet",
  "pyo3",
  "rayon",
- "smallvec",
  "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]
