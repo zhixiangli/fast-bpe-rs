@@ -490,11 +490,13 @@ dependencies = [
 name = "fast-bpe-rs"
 version = "0.1.7"
 dependencies = [
+ "ahash",
  "fancy-regex",
  "hf-hub",
  "parquet",
  "pyo3",
  "rayon",
+ "rustc-hash",
 ]
 
 [[package]]
@@ -1657,6 +1659,12 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
 
 [[package]]
 name = "rustc_version"
