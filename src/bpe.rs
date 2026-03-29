@@ -94,11 +94,14 @@ impl BPE {
         let mut cursor = 0;
 
         if let Some(special_split_pattern) = &self.special_split_pattern {
-            for matched in special_split_pattern.find_iter(doc).flatten() {
+            for matched in special_split_pattern
+                .find_iter(doc)
+                .map(|matched| matched.expect("special token regex evaluation should succeed"))
+            {
                 chunks.extend(
                     self.split_pattern
                         .find_iter(&doc[cursor..matched.start()])
-                        .flatten()
+                        .map(|matched| matched.expect("split regex evaluation should succeed"))
                         .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
                 );
                 cursor = matched.end();
@@ -108,7 +111,7 @@ impl BPE {
         chunks.extend(
             self.split_pattern
                 .find_iter(&doc[cursor..])
-                .flatten()
+                .map(|matched| matched.expect("split regex evaluation should succeed"))
                 .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
         );
         chunks
@@ -636,11 +639,14 @@ impl BPE {
         let mut cursor = 0;
 
         if let Some(special_split_pattern) = &self.special_split_pattern {
-            for matched in special_split_pattern.find_iter(doc).flatten() {
+            for matched in special_split_pattern
+                .find_iter(doc)
+                .map(|matched| matched.expect("special token regex evaluation should succeed"))
+            {
                 chains.extend(
                     self.split_pattern
                         .find_iter(&doc[cursor..matched.start()])
-                        .flatten()
+                        .map(|matched| matched.expect("split regex evaluation should succeed"))
                         .map(|matched| Chain::new(matched.as_str().as_bytes())),
                 );
 
@@ -657,7 +663,7 @@ impl BPE {
         chains.extend(
             self.split_pattern
                 .find_iter(&doc[cursor..])
-                .flatten()
+                .map(|matched| matched.expect("split regex evaluation should succeed"))
                 .map(|matched| Chain::new(matched.as_str().as_bytes())),
         );
         chains
