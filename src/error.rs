@@ -5,7 +5,7 @@ use std::fmt;
 #[derive(Debug)]
 pub enum BPEError {
     /// The caller supplied an invalid regex for splitting documents into chunks.
-    InvalidSplitRegex(fancy_regex::Error),
+    InvalidSplitRegex(regex::Error),
     /// A special token attempted to reuse an id reserved for raw byte values.
     SpecialTokenIdOverlapsBaseVocab { token: String, token_id: TokenId },
     /// Two different special tokens were assigned the same token id.
@@ -29,8 +29,8 @@ impl fmt::Display for BPEError {
 
 impl std::error::Error for BPEError {}
 
-impl From<fancy_regex::Error> for BPEError {
-    fn from(value: fancy_regex::Error) -> Self {
+impl From<regex::Error> for BPEError {
+    fn from(value: regex::Error) -> Self {
         Self::InvalidSplitRegex(value)
     }
 }
