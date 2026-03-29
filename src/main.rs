@@ -8,7 +8,7 @@ use std::time::Instant;
 
 const DATASET_REPO: &str = "Salesforce/wikitext";
 const TRAIN_FILE: &str = "wikitext-2-raw-v1/train-00000-of-00001.parquet";
-const TARGET_VOCAB_SIZE: u32 = 5_000;
+const TARGET_VOCAB_SIZE: u32 = 65_536;
 const SPLIT_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
