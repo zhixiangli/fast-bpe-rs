@@ -44,54 +44,69 @@ pub struct BPE {
 }
 
 impl BPE {
-    /// Number of documents to split concurrently before folding the results back into the
-    /// deduplicated training-chain table.
-    const SPLIT_BATCH_SIZE: usize = 256;
-
-    /// Builds a stable byte signature for a freshly split byte-level chunk so identical chunks can
-    /// be deduplicated before training begins.
-    fn chain_signature(chain: &Chain) -> Vec<u8> {
-        chain
-            .iter()
-            .map(|(_, node)| {
-                u8::try_from(node.token_id)
-                    .expect("chain dedup signature only supports byte-level token ids")
-            })
-            .collect()
-    }
-
-    /// Splits a bounded batch of documents in parallel so training only retains one batch of
-    /// intermediate chains at a time.
-    fn split_docs_batch(&self, docs: &[String]) -> Vec<Vec<Chain>> {
-        docs.par_iter()
-            .map(|doc| self.split_for_training(doc))
-            .collect::<Vec<_>>()
-    }
-
-    /// Folds a previously split batch into the deduplicated training-chain table.
+    /// Splits input text into byte chunks for training, using special tokens only as boundaries.
     ///
-    /// Chunk order does not affect training because merges are learned from aggregated chunk
-    /// frequencies rather than document position.
-    fn ingest_split_batch(
-        &mut self,
-        chain_indexes: &mut HashMap<Vec<u8>, ChainIndex>,
-        split_docs: Vec<Vec<Chain>>,
-    ) {
-        for chains in split_docs {
-            for chain in chains {
-                let signature = Self::chain_signature(&chain);
-                if let Some(&chain_index) = chain_indexes.get(&signature) {
-                    self.chains[chain_index].frequency += 1;
-                } else {
-                    let chain_index = self.chains.len();
-                    self.chains.push(WeightedChain {
-                        chain,
-                        frequency: 1,
-                    });
-                    chain_indexes.insert(signature, chain_index);
-                }
+    /// Training learns merges from raw byte spans, so special tokens are excluded rather than
+    /// materialized as token ids.
+    fn split_for_training_bytes(&self, doc: impl AsRef<str>) -> Vec<Vec<u8>> {
+        let doc = doc.as_ref();
+        let mut chunks = Vec::new();
+        let mut cursor = 0;
+
+        if let Some(special_split_pattern) = &self.special_split_pattern {
+            for matched in special_split_pattern.find_iter(doc).filter_map(Result::ok) {
+                chunks.extend(
+                    self.split_pattern
+                        .find_iter(&doc[cursor..matched.start()])
+                        .filter_map(Result::ok)
+                        .map(|matched| matched.as_str().as_bytes().to_vec()),
+                );
+                cursor = matched.end();
             }
         }
+
+        chunks.extend(
+            self.split_pattern
+                .find_iter(&doc[cursor..])
+                .filter_map(Result::ok)
+                .map(|matched| matched.as_str().as_bytes().to_vec()),
+        );
+        chunks
+    }
+
+    /// Parallel fold+reduce over all docs, producing byte-chunk frequencies without allocating
+    /// duplicate chains for repeated chunks.
+    fn build_training_chains(
+        &self,
+        docs: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Vec<WeightedChain> {
+        let docs: Vec<String> = docs
+            .into_iter()
+            .map(|doc| doc.as_ref().to_owned())
+            .collect();
+
+        docs.par_iter()
+            .fold(HashMap::<Vec<u8>, u32>::new, |mut local_counts, doc| {
+                for chunk in self.split_for_training_bytes(doc) {
+                    *local_counts.entry(chunk).or_default() += 1;
+                }
+                local_counts
+            })
+            .reduce(
+                HashMap::<Vec<u8>, u32>::new,
+                |mut global_counts, local_counts| {
+                    for (chunk, frequency) in local_counts {
+                        *global_counts.entry(chunk).or_default() += frequency;
+                    }
+                    global_counts
+                },
+            )
+            .into_iter()
+            .map(|(chunk, frequency)| WeightedChain {
+                chain: Chain::new(&chunk),
+                frequency,
+            })
+            .collect()
     }
 
     /// Constructs a model and panics if the split regex is invalid.
@@ -249,24 +264,7 @@ impl BPE {
     /// ```
     pub fn train(&mut self, vocab_size: TokenId, docs: impl IntoIterator<Item = impl AsRef<str>>) {
         self.reset_training_state();
-
-        let mut chain_indexes = HashMap::<Vec<u8>, ChainIndex>::new();
-        let mut split_batch = Vec::with_capacity(Self::SPLIT_BATCH_SIZE);
-        for doc in docs {
-            split_batch.push(doc.as_ref().to_owned());
-            if split_batch.len() == Self::SPLIT_BATCH_SIZE {
-                self.ingest_split_batch(&mut chain_indexes, self.split_docs_batch(&split_batch));
-                split_batch.clear();
-            }
-        }
-        if !split_batch.is_empty() {
-            self.ingest_split_batch(&mut chain_indexes, self.split_docs_batch(&split_batch));
-        }
-
-        // Free the document-splitting scratch space and dedup table before merge training so peak
-        // memory only reflects the chain store plus the live pair indexes.
-        drop(split_batch);
-        drop(chain_indexes);
+        self.chains = self.build_training_chains(docs);
 
         // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
         let mut chains = std::mem::take(&mut self.chains);
@@ -412,14 +410,6 @@ impl BPE {
             .collect()
     }
 
-    /// Splits input text into chains for training, using special tokens only as boundaries.
-    ///
-    /// Training learns merges from raw byte spans, so special tokens are excluded rather than
-    /// materialized as chains.
-    fn split_for_training(&self, doc: impl AsRef<str>) -> Vec<Chain> {
-        self.split_impl(doc, false)
-    }
-
     /// Splits input text into independently-encodable chains.
     ///
     /// Special tokens act like pre-tokenized islands. Everything between them is split by the
@@ -505,7 +495,6 @@ mod tests {
 
         assert_eq!(bpe.chains.len(), 1);
         assert_eq!(bpe.chains[0].frequency, 3);
-        assert_eq!(BPE::chain_signature(&Chain::new(b"the")), b"the".to_vec());
         assert_eq!(bpe.vocab.get(&256), Some(&b"he".to_vec()));
         assert_eq!(bpe.vocab.get(&257), Some(&b"the".to_vec()));
         assert_eq!(bpe.pair_counts.get(&(b't' as u32, b'h' as u32)), None);
@@ -513,11 +502,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "chain dedup signature only supports byte-level token ids")]
-    fn chain_signature_rejects_non_byte_tokens() {
-        let chain = Chain::from_token_id(BASE_VOCAB_SIZE);
-
-        let _ = BPE::chain_signature(&chain);
+    fn split_for_training_bytes_uses_special_tokens_as_boundaries() {
+        let bpe = BPE::new_with_special_tokens("(?s).+", [("<|eot|>", BASE_VOCAB_SIZE)]);
+        let chunks = bpe.split_for_training_bytes("left<|eot|>right");
+        assert_eq!(chunks, vec![b"left".to_vec(), b"right".to_vec()]);
     }
 
     #[test]
@@ -645,11 +633,10 @@ mod tests {
     #[test]
     fn training_split_uses_special_tokens_as_boundaries_without_emitting_them() {
         let bpe = BPE::new_with_special_tokens(r"\S+", [("<pad>", 300), ("<eos>", 301)]);
-
-        let chains = bpe.split_for_training("hi<pad><eos>there");
-        let signatures: Vec<Vec<u8>> = chains.iter().map(BPE::chain_signature).collect();
-
-        assert_eq!(signatures, vec![b"hi".to_vec(), b"there".to_vec()]);
+        assert_eq!(
+            bpe.split_for_training_bytes("hi<pad><eos>there"),
+            vec![b"hi".to_vec(), b"there".to_vec()]
+        );
     }
 
     #[test]
