@@ -687,6 +687,12 @@ impl BPE {
     }
 }
 
+impl Default for BPE {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
