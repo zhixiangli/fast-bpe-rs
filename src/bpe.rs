@@ -4,8 +4,8 @@ use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, Se
 use ahash::AHashMap;
 use fancy_regex::{Regex, escape};
 use rayon::prelude::*;
-use smallvec::SmallVec;
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
@@ -89,12 +89,15 @@ impl BPE {
             .collect();
 
         docs.par_iter()
-            .fold(AHashMap::<SmallVec<[u8; 16]>::new, |mut local_counts, doc| {
-                for chunk in self.split_for_training_bytes(doc) {
-                    *local_counts.entry(chunk).or_default() += 1;
-                }
-                local_counts
-            })
+            .fold(
+                AHashMap::<SmallVec<[u8; 16]>, u32>::new,
+                |mut local_counts, doc| {
+                    for chunk in self.split_for_training_bytes(doc) {
+                        *local_counts.entry(chunk).or_default() += 1;
+                    }
+                    local_counts
+                },
+            )
             .reduce(
                 AHashMap::<SmallVec<[u8; 16]>, u32>::new,
                 |mut global_counts, local_counts| {
