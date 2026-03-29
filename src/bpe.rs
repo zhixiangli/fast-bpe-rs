@@ -23,8 +23,31 @@ struct PairInfo {
 
 /// Byte Pair Encoding model with optional special-token support.
 ///
-/// The implementation keeps training-time state in linked-list-like chains so that merges can be
-/// applied without rebuilding every token sequence from scratch.
+/// The core design treats each tokenized chunk as a mutable linked structure (`Chain`) and tracks
+/// adjacent-pair statistics in a frequency-indexed table. This avoids repeated full rescans of the
+/// corpus during training: after each merge, only neighborhoods around changed nodes are updated.
+///
+/// Training data flow (coarse):
+///
+/// ```text
+/// docs
+///   |
+///   v
+/// split_for_training_bytes (regex chunks; special tokens are boundaries only)
+///   |
+///   v
+/// build_training_chains (deduplicate chunks -> weighted chains)
+///   |
+///   v
+/// build_initial_pair_stats (pair -> {count, locations})
+///   |
+///   v
+/// repeat until vocab full:
+///   pick highest-frequency pair
+///   materialize merged token bytes
+///   splice every recorded occurrence in-place
+///   adjust only affected neighboring pairs
+/// ```
 #[derive(Debug)]
 pub struct BPE {
     /// Regex used to split ordinary text into independently-mergeable spans.
@@ -40,11 +63,17 @@ pub struct BPE {
 
     // Training-time index structures.
     //
-    // `chains` stores each unique training chunk once alongside its corpus frequency.
-    // `pair_info` and `count_to_pairs` together act like an indexed priority queue
-    // that answers two questions efficiently:
-    //   1. "Which pair is currently most frequent?"
-    //   2. "Where does that pair appear so we can rewrite those locations?"
+    // `chains` stores each unique training chunk once with its corpus multiplicity.
+    // `pair_info` + `count_to_pairs` form a bidirectional index:
+    //
+    //   pair -------------------------------> metadata
+    //   (A,B)       pair_info[(A,B)] = {count, locations}
+    //
+    //   count -----------------------------> set of pairs at that count
+    //   17          count_to_pairs[17] = {(A,B), (C,D), ...}
+    //
+    // `max_pair_count` points to the highest non-empty count bucket, so selecting the current
+    // best merge is an O(1)-expected bucket lookup plus tie-break in that bucket.
     chains: Vec<WeightedChain>,
     count_to_pairs: Vec<FxHashSet<Pair>>, // frequency -> pairs
     max_pair_count: u32,                  // largest non-empty frequency bucket
@@ -254,18 +283,34 @@ impl BPE {
         )
     }
 
-    /// Updates the frequency tables and occurrence set for one adjacent token pair.
+    /// Updates pair frequency and location indexes after one local topology change.
     ///
-    /// Conceptually the bookkeeping looks like this:
+    /// `delta` is weighted by the source chunk frequency, so one splice in a chain that
+    /// represents N duplicate corpus chunks contributes N increments/decrements.
+    ///
+    /// Index-mutation flow:
     ///
     /// ```text
-    /// pair_info[(A, B)]   = { count: 3, ... }
-    /// count_to_pairs[3]   = {(A, B), ...}
-    /// pair_info[(A, B)]   = { ..., locations: {(chain 0, pos 4), (chain 2, pos 1), ...}}
+    /// input: (pair, location, delta)
+    ///   |
+    ///   v
+    /// mutate pair_info[pair]:
+    ///   count += delta
+    ///   locations +/- (chain_index, pos)
+    ///   |
+    ///   +--> old_count bucket: remove pair
+    ///   |
+    ///   +--> if new_count == 0:
+    ///   |      delete pair_info entry
+    ///   |      shrink max_pair_count downward if needed
+    ///   |
+    ///   +--> else:
+    ///          insert pair into count_to_pairs[new_count]
+    ///          raise max_pair_count if new bucket is higher
     /// ```
     ///
-    /// When a merge removes or creates a pair we update all three views together so the next
-    /// training step can still find the globally most frequent pair in near-constant expected time.
+    /// Keeping both directions synchronized prevents stale bucket membership and ensures the
+    /// "next best pair" query remains unambiguous after overlapping merges.
     fn adjust(&mut self, pair: Pair, chain_index: ChainIndex, pos: NodePos, delta: i64) {
         let mut should_remove_pair = false;
         let (old_count, new_count) = {
@@ -320,14 +365,38 @@ impl BPE {
 
     /// Learns merge rules until `vocab_size` is reached or no mergeable pair remains.
     ///
-    /// High-level training loop:
+    /// Detailed training loop:
     ///
     /// ```text
-    /// docs --split--> chains of byte tokens
-    ///      --count--> most frequent adjacent pair
-    ///      --merge--> rewrite every occurrence in-place
-    ///      --repeat-> until vocabulary is full
+    /// [1] reset_training_state
+    ///      |
+    ///      v
+    /// [2] build weighted chains from docs
+    ///      (deduplicate identical chunks -> frequency weight)
+    ///      |
+    ///      v
+    /// [3] build initial pair stats
+    ///      pair_info[(L,R)] = {weighted_count, all left-node locations}
+    ///      count_to_pairs[count] += (L,R)
+    ///      |
+    ///      v
+    /// [4] for merged_id in vocabulary-growth order:
+    ///      |
+    ///      +--> select best_pair from count_to_pairs[max_pair_count]
+    ///      |      (deterministic tie break by lexical pair order)
+    ///      |
+    ///      +--> vocab[merged_id] = vocab[left] ++ vocab[right]
+    ///      |    merge_map[(left,right)] = merged_id
+    ///      |
+    ///      +--> for each recorded occurrence of best_pair:
+    ///             verify nodes still match (skip stale locations)
+    ///             splice(left,right -> merged_id)
+    ///             adjust frequencies for old neighbors removed
+    ///             adjust frequencies for new neighbors created
     /// ```
+    ///
+    /// Because only local neighborhoods are re-counted after each splice, training scales with
+    /// actual edits rather than repeatedly scanning every adjacency in every chain.
     pub fn train(&mut self, vocab_size: TokenId, docs: impl IntoIterator<Item = impl AsRef<str>>) {
         self.reset_training_state();
         self.chains = self.build_training_chains(docs);
@@ -459,8 +528,24 @@ impl BPE {
 
     /// Encodes text by repeatedly applying the learned merge with the lowest token id available.
     ///
-    /// Using the lowest merge id reproduces the same merge priority as training order: earlier
-    /// merges receive smaller ids and therefore win when multiple adjacent pairs are possible.
+    /// Priority resolution mirrors training chronology because merge ids are assigned in the order
+    /// rules are learned (lower id => earlier, higher-priority merge).
+    ///
+    /// Per-chain encode flow:
+    ///
+    /// ```text
+    /// chain nodes
+    ///   |
+    ///   v
+    /// scan adjacent pairs -> candidate merges from merge_map
+    ///   |
+    ///   v
+    /// choose candidate with smallest merge_id
+    ///   |
+    ///   +--> none: emit chain token_ids
+    ///   |
+    ///   +--> some: splice pair and rescan chain
+    /// ```
     pub fn encode(&self, doc: impl AsRef<str>) -> Vec<TokenId> {
         let mut chains = self.split(doc);
         let mut encoded = Vec::new();

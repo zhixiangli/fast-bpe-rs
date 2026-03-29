@@ -16,16 +16,32 @@ pub(crate) struct Node {
 
 /// Sparse linked list stored inside a fixed-width `Vec`.
 ///
-/// Visual model:
+/// The module is designed for BPE's "merge adjacent pair" primitive:
+/// - `Vec<Option<Node>>` provides stable integer positions (`NodePos`).
+/// - Live traversal follows `prev/next` links from `head`.
+/// - Removing a node creates a tombstone (`None`) instead of shifting indices.
+///
+/// Structural flow:
 ///
 /// ```text
-/// nodes vec:  [0] <-> [1] <-> [2] <-> [3]
-/// merge 1,2:  [0] <-> [1]     x    [3]
-///                    ^ merged token now reuses the left slot
+/// Allocation axis (stable slots):
+///   nodes[0]  nodes[1]  nodes[2]  nodes[3] ...
+///      |         |         |         |
+///      v         v         v         v
+///     Some      Some      Some      Some
+///
+/// Logical chain axis (links):
+///   head -> [0] <-> [1] <-> [2] <-> [3]
+///
+/// After splice(1,2):
+///   head -> [0] <-> [1*] <-> [3]
+///                  |
+///                  +-- token_id replaced by merged token
+///   nodes[2] = None   (tombstone, slot retained for index stability)
 /// ```
 ///
-/// Removed right-hand nodes are replaced with `None`, while the left-hand node is updated in place
-/// so repeated merges do not grow the backing allocation.
+/// This layout guarantees O(1) local rewrites and avoids index invalidation in pair-location
+/// bookkeeping maintained by the trainer.
 #[derive(Debug)]
 pub(crate) struct Chain {
     /// Slots for live nodes and tombstones from earlier merges.
@@ -82,17 +98,31 @@ impl Chain {
 
     /// Replaces an adjacent `[left, right]` pair with an in-place merged node.
     ///
-    /// Before:
+    /// Pointer-rewrite sequence:
     ///
     /// ```text
-    /// prev <-> left <-> right <-> next
+    /// Input topology:
+    ///   prev <-> left <-> right <-> next
+    ///
+    /// Step A: create merged node payload
+    ///   merged.prev = left.prev
+    ///   merged.next = right.next
+    ///
+    /// Step B: reconnect neighbors to left slot
+    ///   if prev exists: prev.next = left
+    ///   else:           head = left
+    ///   if next exists: next.prev = left
+    ///
+    /// Step C: finalize slots
+    ///   nodes[left]  = Some(merged)
+    ///   nodes[right] = None
+    ///
+    /// Output topology:
+    ///   prev <-> left(merged) <-> next
     /// ```
     ///
-    /// After:
-    ///
-    /// ```text
-    /// prev <-> left(merged) <-> next
-    /// ```
+    /// Returning `left` lets callers reuse the surviving position when updating pair-location
+    /// indexes, which prevents ambiguity about where the merged token now lives.
     pub(crate) fn splice(
         &mut self,
         left: NodePos,
