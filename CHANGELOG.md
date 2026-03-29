@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.1.7...v0.2.0) (2026-03-29)
+
+
+### Features
+
+* add default fancy-regex split pattern ([#84](https://github.com/zhixiangli/fast-bpe-rs/issues/84)) ([ddf4d60](https://github.com/zhixiangli/fast-bpe-rs/commit/ddf4d60f74af5f3409aabe95660fd93e64f35399))
+
 ## [0.1.7](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.1.6...v0.1.7) (2026-03-23)
 
 
