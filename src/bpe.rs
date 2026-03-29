@@ -109,6 +109,56 @@ impl BPE {
             .collect()
     }
 
+    /// Counts every adjacent pair in parallel and records all locations where each pair appears.
+    ///
+    /// The resulting map is used to seed `pair_counts`, `pair_locs`, and `count_to_pairs` in one
+    /// pass with one bucket insertion per unique pair.
+    fn build_initial_pair_stats(
+        chains: &[WeightedChain],
+    ) -> HashMap<Pair, (u32, Vec<(ChainIndex, NodePos)>)> {
+        chains
+            .par_iter()
+            .enumerate()
+            .fold(
+                HashMap::<Pair, (u32, Vec<(ChainIndex, NodePos)>)>::new,
+                |mut local_pairs, (chain_index, weighted_chain)| {
+                    let pair_capacity = weighted_chain.chain.nodes.len().saturating_sub(1);
+                    if pair_capacity > 0 {
+                        local_pairs.reserve(pair_capacity);
+                    }
+
+                    let frequency = weighted_chain.frequency;
+                    let mut previous = None;
+                    for (pos, node) in weighted_chain.chain.iter() {
+                        if let Some((left_pos, left_id)) = previous {
+                            let pair = (left_id, node.token_id);
+                            let (count, locations) = local_pairs
+                                .entry(pair)
+                                .or_insert_with(|| (0, Vec::with_capacity(1)));
+                            *count += frequency;
+                            locations.push((chain_index, left_pos));
+                        }
+                        previous = Some((pos, node.token_id));
+                    }
+                    local_pairs
+                },
+            )
+            .reduce(
+                HashMap::<Pair, (u32, Vec<(ChainIndex, NodePos)>)>::new,
+                |mut global_pairs, local_pairs| {
+                    global_pairs.reserve(local_pairs.len());
+                    for (pair, (count, mut locations)) in local_pairs {
+                        let (global_count, global_locations) = global_pairs
+                            .entry(pair)
+                            .or_insert_with(|| (0, Vec::with_capacity(locations.len())));
+                        *global_count += count;
+                        global_locations.append(&mut locations);
+                    }
+                    global_pairs
+                },
+            )
+    }
+
     /// Constructs a model and panics if the split regex is invalid.
     pub fn new(split_pattern: impl AsRef<str>) -> Self {
         Self::try_new(split_pattern).expect("invalid split regex")
@@ -269,16 +319,24 @@ impl BPE {
         // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
         let mut chains = std::mem::take(&mut self.chains);
 
-        // Seed the pair-frequency index with every currently-adjacent pair without
-        // materializing an extra per-chain node snapshot.
-        for (chain_index, weighted_chain) in chains.iter().enumerate() {
-            let frequency = i64::from(weighted_chain.frequency);
-            let mut previous = None;
-            for (pos, node) in weighted_chain.chain.iter() {
-                if let Some((left_pos, left_id)) = previous {
-                    self.adjust((left_id, node.token_id), chain_index, left_pos, frequency);
-                }
-                previous = Some((pos, node.token_id));
+        // Seed all pair indexes from a parallel count/location aggregation.
+        let initial_pair_stats = Self::build_initial_pair_stats(&chains);
+        if !initial_pair_stats.is_empty() {
+            self.pair_counts.reserve(initial_pair_stats.len());
+            self.pair_locs.reserve(initial_pair_stats.len());
+
+            self.max_pair_count = initial_pair_stats
+                .values()
+                .map(|(count, _)| *count)
+                .max()
+                .unwrap_or_default();
+            self.count_to_pairs
+                .resize_with(self.max_pair_count as usize + 1, BTreeSet::new);
+
+            for (pair, (count, locations)) in initial_pair_stats {
+                self.pair_counts.insert(pair, count);
+                self.pair_locs.insert(pair, locations.into_iter().collect());
+                self.count_to_pairs[count as usize].insert(pair);
             }
         }
 
