@@ -15,6 +15,12 @@ struct WeightedChain {
     frequency: u32,
 }
 
+#[derive(Debug, Default)]
+struct PairInfo {
+    count: u32,
+    locations: PairLocations,
+}
+
 /// Byte Pair Encoding model with optional special-token support.
 ///
 /// The implementation keeps training-time state in linked-list-like chains so that merges can be
@@ -35,15 +41,14 @@ pub struct BPE {
     // Training-time index structures.
     //
     // `chains` stores each unique training chunk once alongside its corpus frequency.
-    // `pair_counts`, `count_to_pairs`, and `pair_locs` together act like an indexed priority queue
+    // `pair_info` and `count_to_pairs` together act like an indexed priority queue
     // that answers two questions efficiently:
     //   1. "Which pair is currently most frequent?"
     //   2. "Where does that pair appear so we can rewrite those locations?"
     chains: Vec<WeightedChain>,
-    count_to_pairs: Vec<BTreeSet<Pair>>, // frequency -> pairs
-    max_pair_count: u32,                 // largest non-empty frequency bucket
-    pair_counts: FxHashMap<Pair, u32>,   // pair -> frequency
-    pair_locs: FxHashMap<Pair, PairLocations>, // pair -> (chain_idx, node_pos)
+    count_to_pairs: Vec<BTreeSet<Pair>>,  // frequency -> pairs
+    max_pair_count: u32,                  // largest non-empty frequency bucket
+    pair_info: FxHashMap<Pair, PairInfo>, // pair -> {frequency, (chain_idx, node_pos)}
 }
 
 impl BPE {
@@ -117,7 +122,7 @@ impl BPE {
 
     /// Counts every adjacent pair in parallel and records all locations where each pair appears.
     ///
-    /// The resulting map is used to seed `pair_counts`, `pair_locs`, and `count_to_pairs` in one
+    /// The resulting map is used to seed `pair_info` and `count_to_pairs` in one
     /// pass with one bucket insertion per unique pair.
     fn build_initial_pair_stats(
         chains: &[WeightedChain],
@@ -226,8 +231,7 @@ impl BPE {
             chains: Vec::new(),
             count_to_pairs: vec![BTreeSet::new()],
             max_pair_count: 0,
-            pair_counts: FxHashMap::default(),
-            pair_locs: FxHashMap::default(),
+            pair_info: FxHashMap::default(),
         })
     }
 
@@ -257,19 +261,34 @@ impl BPE {
     /// Conceptually the bookkeeping looks like this:
     ///
     /// ```text
-    /// pair_counts[(A, B)] = 3
+    /// pair_info[(A, B)]   = { count: 3, ... }
     /// count_to_pairs[3]   = {(A, B), ...}
-    /// pair_locs[(A, B)]   = {(chain 0, pos 4), (chain 2, pos 1), ...}
+    /// pair_info[(A, B)]   = { ..., locations: {(chain 0, pos 4), (chain 2, pos 1), ...}}
     /// ```
     ///
     /// When a merge removes or creates a pair we update all three views together so the next
     /// training step can still find the globally most frequent pair in `O(log n)` map time.
     fn adjust(&mut self, pair: Pair, chain_index: ChainIndex, pos: NodePos, delta: i64) {
-        let old_count = self.pair_counts.get(&pair).copied().unwrap_or_default();
-        let new_count_i64 = i64::from(old_count) + delta;
-        debug_assert!(new_count_i64 >= 0, "pair counts must stay non-negative");
-        let new_count =
-            u32::try_from(new_count_i64).expect("pair counts must fit in u32 after adjustment");
+        let mut should_remove_pair = false;
+        let (old_count, new_count) = {
+            let pair_info = self.pair_info.entry(pair).or_default();
+            let old_count = pair_info.count;
+            let new_count_i64 = i64::from(old_count) + delta;
+            debug_assert!(new_count_i64 >= 0, "pair counts must stay non-negative");
+            let new_count =
+                u32::try_from(new_count_i64).expect("pair counts must fit in u32 after adjustment");
+
+            pair_info.count = new_count;
+            if delta > 0 {
+                pair_info.locations.insert((chain_index, pos));
+            } else {
+                pair_info.locations.remove(&(chain_index, pos));
+            }
+            if new_count == 0 {
+                should_remove_pair = true;
+            }
+            (old_count, new_count)
+        };
 
         if old_count > 0 {
             let bucket = self
@@ -287,25 +306,18 @@ impl BPE {
         }
 
         if new_count == 0 {
-            self.pair_counts.remove(&pair);
-            self.pair_locs.remove(&pair);
+            if should_remove_pair {
+                self.pair_info.remove(&pair);
+            }
             return;
         }
 
-        self.pair_counts.insert(pair, new_count);
         if self.count_to_pairs.len() <= new_count as usize {
             self.count_to_pairs
                 .resize_with(new_count as usize + 1, BTreeSet::new);
         }
         self.count_to_pairs[new_count as usize].insert(pair);
         self.max_pair_count = self.max_pair_count.max(new_count);
-
-        let locations = self.pair_locs.entry(pair).or_default();
-        if delta > 0 {
-            locations.insert((chain_index, pos));
-        } else {
-            locations.remove(&(chain_index, pos));
-        }
     }
 
     /// Learns merge rules until `vocab_size` is reached or no mergeable pair remains.
@@ -328,8 +340,7 @@ impl BPE {
         // Seed all pair indexes from a parallel count/location aggregation.
         let initial_pair_stats = Self::build_initial_pair_stats(&chains);
         if !initial_pair_stats.is_empty() {
-            self.pair_counts.reserve(initial_pair_stats.len());
-            self.pair_locs.reserve(initial_pair_stats.len());
+            self.pair_info.reserve(initial_pair_stats.len());
 
             self.max_pair_count = initial_pair_stats
                 .values()
@@ -340,8 +351,13 @@ impl BPE {
                 .resize_with(self.max_pair_count as usize + 1, BTreeSet::new);
 
             for (pair, (count, locations)) in initial_pair_stats {
-                self.pair_counts.insert(pair, count);
-                self.pair_locs.insert(pair, locations.into_iter().collect());
+                self.pair_info.insert(
+                    pair,
+                    PairInfo {
+                        count,
+                        locations: locations.into_iter().collect(),
+                    },
+                );
                 self.count_to_pairs[count as usize].insert(pair);
             }
         }
@@ -368,21 +384,19 @@ impl BPE {
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
-            let best_pair_locations: Vec<_> = self
-                .pair_locs
-                .remove(&best_pair)
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
+            let removed_best_pair_info = self.pair_info.remove(&best_pair);
+            let best_pair_locations: Vec<_> = removed_best_pair_info
+                .as_ref()
+                .map(|info| info.locations.iter().copied().collect())
+                .unwrap_or_default();
 
-            if let Some(best_pair_count) = self.pair_counts.remove(&best_pair) {
-                self.count_to_pairs[best_pair_count as usize].remove(&best_pair);
-                if self.max_pair_count == best_pair_count {
-                    while self.max_pair_count > 0
-                        && self.count_to_pairs[self.max_pair_count as usize].is_empty()
-                    {
-                        self.max_pair_count -= 1;
-                    }
+            if let Some(best_pair_info) = removed_best_pair_info {
+                debug_assert_eq!(best_pair_info.count, self.max_pair_count);
+                self.count_to_pairs[self.max_pair_count as usize].remove(&best_pair);
+                while self.max_pair_count > 0
+                    && self.count_to_pairs[self.max_pair_count as usize].is_empty()
+                {
+                    self.max_pair_count -= 1;
                 }
             }
 
@@ -547,8 +561,7 @@ impl BPE {
         self.count_to_pairs.clear();
         self.count_to_pairs.push(BTreeSet::new());
         self.max_pair_count = 0;
-        self.pair_counts.clear();
-        self.pair_locs.clear();
+        self.pair_info.clear();
     }
 }
 
@@ -578,7 +591,7 @@ mod tests {
         assert_eq!(bpe.chains[0].frequency, 3);
         assert_eq!(bpe.vocab.get(&256), Some(&b"he".to_vec()));
         assert_eq!(bpe.vocab.get(&257), Some(&b"the".to_vec()));
-        assert_eq!(bpe.pair_counts.get(&(b't' as u32, b'h' as u32)), None);
+        assert!(!bpe.pair_info.contains_key(&(b't' as u32, b'h' as u32)));
         assert_eq!(bpe.encode("the the"), vec![257, 257]);
     }
 
@@ -638,8 +651,7 @@ mod tests {
         assert!(bpe.chains.is_empty());
         assert_eq!(bpe.count_to_pairs.len(), 1);
         assert!(bpe.count_to_pairs[0].is_empty());
-        assert!(bpe.pair_counts.is_empty());
-        assert!(bpe.pair_locs.is_empty());
+        assert!(bpe.pair_info.is_empty());
     }
 
     #[test]
