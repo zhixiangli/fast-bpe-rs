@@ -495,6 +495,7 @@ dependencies = [
  "parquet",
  "pyo3",
  "rayon",
+ "smallvec",
 ]
 
 [[package]]

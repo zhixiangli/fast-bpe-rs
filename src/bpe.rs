@@ -3,6 +3,7 @@ use crate::error::BPEError;
 use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, TokenId};
 use fancy_regex::{Regex, escape};
 use rayon::prelude::*;
+use smallvec::SmallVec;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
@@ -48,7 +49,7 @@ impl BPE {
     ///
     /// Training learns merges from raw byte spans, so special tokens are excluded rather than
     /// materialized as token ids.
-    fn split_for_training_bytes(&self, doc: impl AsRef<str>) -> Vec<Vec<u8>> {
+    fn split_for_training_bytes(&self, doc: impl AsRef<str>) -> Vec<SmallVec<[u8; 16]>> {
         let doc = doc.as_ref();
         let mut chunks = Vec::new();
         let mut cursor = 0;
@@ -59,7 +60,7 @@ impl BPE {
                     self.split_pattern
                         .find_iter(&doc[cursor..matched.start()])
                         .filter_map(Result::ok)
-                        .map(|matched| matched.as_str().as_bytes().to_vec()),
+                        .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
                 );
                 cursor = matched.end();
             }
@@ -69,7 +70,7 @@ impl BPE {
             self.split_pattern
                 .find_iter(&doc[cursor..])
                 .filter_map(Result::ok)
-                .map(|matched| matched.as_str().as_bytes().to_vec()),
+                .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
         );
         chunks
     }
@@ -86,14 +87,17 @@ impl BPE {
             .collect();
 
         docs.par_iter()
-            .fold(HashMap::<Vec<u8>, u32>::new, |mut local_counts, doc| {
-                for chunk in self.split_for_training_bytes(doc) {
-                    *local_counts.entry(chunk).or_default() += 1;
-                }
-                local_counts
-            })
+            .fold(
+                HashMap::<SmallVec<[u8; 16]>, u32>::new,
+                |mut local_counts, doc| {
+                    for chunk in self.split_for_training_bytes(doc) {
+                        *local_counts.entry(chunk).or_default() += 1;
+                    }
+                    local_counts
+                },
+            )
             .reduce(
-                HashMap::<Vec<u8>, u32>::new,
+                HashMap::<SmallVec<[u8; 16]>, u32>::new,
                 |mut global_counts, local_counts| {
                     for (chunk, frequency) in local_counts {
                         *global_counts.entry(chunk).or_default() += frequency;
@@ -563,7 +567,10 @@ mod tests {
     fn split_for_training_bytes_uses_special_tokens_as_boundaries() {
         let bpe = BPE::new_with_special_tokens("(?s).+", [("<|eot|>", BASE_VOCAB_SIZE)]);
         let chunks = bpe.split_for_training_bytes("left<|eot|>right");
-        assert_eq!(chunks, vec![b"left".to_vec(), b"right".to_vec()]);
+        assert_eq!(
+            chunks.iter().map(SmallVec::as_slice).collect::<Vec<_>>(),
+            vec![b"left".as_slice(), b"right".as_slice()]
+        );
     }
 
     #[test]
@@ -692,8 +699,11 @@ mod tests {
     fn training_split_uses_special_tokens_as_boundaries_without_emitting_them() {
         let bpe = BPE::new_with_special_tokens(r"\S+", [("<pad>", 300), ("<eos>", 301)]);
         assert_eq!(
-            bpe.split_for_training_bytes("hi<pad><eos>there"),
-            vec![b"hi".to_vec(), b"there".to_vec()]
+            bpe.split_for_training_bytes("hi<pad><eos>there")
+                .iter()
+                .map(SmallVec::as_slice)
+                .collect::<Vec<_>>(),
+            vec![b"hi".as_slice(), b"there".as_slice()]
         );
     }
 
