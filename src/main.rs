@@ -10,8 +10,6 @@ const DATASET_REPO: &str = "Salesforce/wikitext";
 const DATASET_CONFIG: &str = "wikitext-103-raw-v1";
 const TRAIN_SPLIT_PREFIX: &str = "train-";
 const TARGET_VOCAB_SIZE: u32 = 1 << 15;
-const SPLIT_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+";
-
 fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
     let api = Api::new()?;
     let dataset = api.dataset(DATASET_REPO.to_owned());
@@ -51,7 +49,7 @@ fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let docs = load_wikitext_train_docs()?;
-    let mut bpe = BPE::try_new(SPLIT_PATTERN)?;
+    let mut bpe = BPE::try_new()?;
 
     let train_started = Instant::now();
     bpe.train(TARGET_VOCAB_SIZE, docs.iter());
