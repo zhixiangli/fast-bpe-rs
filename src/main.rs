@@ -10,7 +10,7 @@ const DATASET_REPO: &str = "Salesforce/wikitext";
 const DATASET_CONFIG: &str = "wikitext-103-raw-v1";
 const TRAIN_SPLIT_PREFIX: &str = "train-";
 const TARGET_VOCAB_SIZE: u32 = 1 << 15;
-const SPLIT_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+const SPLIT_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+";
 
 fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
     let api = Api::new()?;

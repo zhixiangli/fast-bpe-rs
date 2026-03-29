@@ -2,8 +2,8 @@ use crate::chain::Chain;
 use crate::error::BPEError;
 use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, SeedMap, TokenId};
 use ahash::AHashMap;
-use fancy_regex::{Regex, escape};
 use rayon::prelude::*;
+use regex::{Regex, escape};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
@@ -62,11 +62,10 @@ impl BPE {
         let mut cursor = 0;
 
         if let Some(special_split_pattern) = &self.special_split_pattern {
-            for matched in special_split_pattern.find_iter(doc).filter_map(Result::ok) {
+            for matched in special_split_pattern.find_iter(doc) {
                 chunks.extend(
                     self.split_pattern
                         .find_iter(&doc[cursor..matched.start()])
-                        .filter_map(Result::ok)
                         .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
                 );
                 cursor = matched.end();
@@ -76,7 +75,6 @@ impl BPE {
         chunks.extend(
             self.split_pattern
                 .find_iter(&doc[cursor..])
-                .filter_map(Result::ok)
                 .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
         );
         chunks
@@ -520,11 +518,10 @@ impl BPE {
         let mut cursor = 0;
 
         if let Some(special_split_pattern) = &self.special_split_pattern {
-            for matched in special_split_pattern.find_iter(doc).filter_map(Result::ok) {
+            for matched in special_split_pattern.find_iter(doc) {
                 chains.extend(
                     self.split_pattern
                         .find_iter(&doc[cursor..matched.start()])
-                        .filter_map(Result::ok)
                         .map(|matched| Chain::new(matched.as_str().as_bytes())),
                 );
 
@@ -541,7 +538,6 @@ impl BPE {
         chains.extend(
             self.split_pattern
                 .find_iter(&doc[cursor..])
-                .filter_map(Result::ok)
                 .map(|matched| Chain::new(matched.as_str().as_bytes())),
         );
         chains
