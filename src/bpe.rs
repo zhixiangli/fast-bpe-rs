@@ -766,12 +766,13 @@ mod tests {
     #[test]
     fn train_deduplicates_chunks_across_split_batches() {
         let mut bpe = BPE::new("(?s).+");
-        let docs = std::iter::repeat_n("xy", BPE::SPLIT_BATCH_SIZE + 17);
+        let doc_count = 1_017;
+        let docs = std::iter::repeat_n("xy", doc_count);
 
         bpe.train(257, docs);
 
         assert_eq!(bpe.chains.len(), 1);
-        assert_eq!(bpe.chains[0].frequency as usize, BPE::SPLIT_BATCH_SIZE + 17);
+        assert_eq!(bpe.chains[0].frequency as usize, doc_count);
         assert_eq!(bpe.vocab.get(&256), Some(&b"xy".to_vec()));
     }
 
