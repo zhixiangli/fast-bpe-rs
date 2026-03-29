@@ -7,23 +7,44 @@ use std::fs::File;
 use std::time::Instant;
 
 const DATASET_REPO: &str = "Salesforce/wikitext";
-const TRAIN_FILE: &str = "wikitext-2-raw-v1/train-00000-of-00001.parquet";
-const TARGET_VOCAB_SIZE: u32 = 65_536;
+const DATASET_CONFIG: &str = "wikitext-103-raw-v1";
+const TRAIN_SPLIT_PREFIX: &str = "train-";
+const TARGET_VOCAB_SIZE: u32 = 1 << 15;
 const SPLIT_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
     let api = Api::new()?;
-    let train_path = api.dataset(DATASET_REPO.to_owned()).get(TRAIN_FILE)?;
+    let dataset = api.dataset(DATASET_REPO.to_owned());
+    let repo_info = dataset.info()?;
 
-    let file = File::open(train_path)?;
-    let parquet = SerializedFileReader::new(file)?;
-    let rows = parquet.get_row_iter(None)?;
-
-    let docs = rows
-        .filter_map(|row| row.ok())
-        .filter_map(|row| row.get_string(0).ok().map(|text| text.trim().to_owned()))
-        .filter(|text| !text.is_empty())
+    let mut train_files: Vec<String> = repo_info
+        .siblings
+        .into_iter()
+        .map(|sibling| sibling.rfilename)
+        .filter(|path| {
+            path.starts_with(DATASET_CONFIG)
+                && path.ends_with(".parquet")
+                && path
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|name| name.starts_with(TRAIN_SPLIT_PREFIX))
+        })
         .collect();
+    train_files.sort_unstable();
+
+    let mut docs = Vec::new();
+    for train_file in &train_files {
+        let train_path = dataset.get(train_file)?;
+        let file = File::open(train_path)?;
+        let parquet = SerializedFileReader::new(file)?;
+        let rows = parquet.get_row_iter(None)?;
+
+        docs.extend(
+            rows.filter_map(|row| row.ok())
+                .filter_map(|row| row.get_string(0).ok().map(|text| text.trim().to_owned()))
+                .filter(|text| !text.is_empty()),
+        );
+    }
 
     Ok(docs)
 }
@@ -37,8 +58,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let train_elapsed = train_started.elapsed();
 
     println!(
-        "Loaded {} documents from {DATASET_REPO}/{TRAIN_FILE}",
-        docs.len()
+        "Loaded {} documents from {DATASET_REPO}/{DATASET_CONFIG} ({TRAIN_SPLIT_PREFIX}*.parquet)",
+        docs.len(),
     );
     println!("Finished BPE training up to vocab size {TARGET_VOCAB_SIZE}");
     println!("Training elapsed: {:.3?}", train_elapsed);
