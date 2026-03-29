@@ -1,8 +1,10 @@
+use ahash::AHashMap;
 use crate::chain::Chain;
 use crate::error::BPEError;
 use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, TokenId};
 use fancy_regex::{Regex, escape};
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
@@ -39,8 +41,8 @@ pub struct BPE {
     chains: Vec<WeightedChain>,
     count_to_pairs: Vec<BTreeSet<Pair>>,     // frequency -> pairs
     max_pair_count: u32,                     // largest non-empty frequency bucket
-    pair_counts: HashMap<Pair, u32>,         // pair -> frequency
-    pair_locs: HashMap<Pair, PairLocations>, // pair -> (chain_idx, node_pos)
+    pair_counts: FxHashMap<Pair, u32>,         // pair -> frequency
+    pair_locs: FxHashMap<Pair, PairLocations>, // pair -> (chain_idx, node_pos)
 }
 
 impl BPE {
@@ -86,14 +88,14 @@ impl BPE {
             .collect();
 
         docs.par_iter()
-            .fold(HashMap::<Vec<u8>, u32>::new, |mut local_counts, doc| {
+            .fold(AHashMap::<Vec<u8>, u32>::new, |mut local_counts, doc| {
                 for chunk in self.split_for_training_bytes(doc) {
                     *local_counts.entry(chunk).or_default() += 1;
                 }
                 local_counts
             })
             .reduce(
-                HashMap::<Vec<u8>, u32>::new,
+                AHashMap::<Vec<u8>, u32>::new,
                 |mut global_counts, local_counts| {
                     for (chunk, frequency) in local_counts {
                         *global_counts.entry(chunk).or_default() += frequency;
@@ -115,12 +117,12 @@ impl BPE {
     /// pass with one bucket insertion per unique pair.
     fn build_initial_pair_stats(
         chains: &[WeightedChain],
-    ) -> HashMap<Pair, (u32, Vec<(ChainIndex, NodePos)>)> {
+    ) -> FxHashMap<Pair, (u32, Vec<(ChainIndex, NodePos)>)> {
         chains
             .par_iter()
             .enumerate()
             .fold(
-                HashMap::<Pair, (u32, Vec<(ChainIndex, NodePos)>)>::new,
+                FxHashMap::<Pair, (u32, Vec<(ChainIndex, NodePos)>)>::default,
                 |mut local_pairs, (chain_index, weighted_chain)| {
                     let pair_capacity = weighted_chain.chain.nodes.len().saturating_sub(1);
                     if pair_capacity > 0 {
@@ -144,7 +146,7 @@ impl BPE {
                 },
             )
             .reduce(
-                HashMap::<Pair, (u32, Vec<(ChainIndex, NodePos)>)>::new,
+                FxHashMap::<Pair, (u32, Vec<(ChainIndex, NodePos)>)>::default,
                 |mut global_pairs, local_pairs| {
                     global_pairs.reserve(local_pairs.len());
                     for (pair, (count, mut locations)) in local_pairs {
@@ -220,8 +222,8 @@ impl BPE {
             chains: Vec::new(),
             count_to_pairs: vec![BTreeSet::new()],
             max_pair_count: 0,
-            pair_counts: HashMap::new(),
-            pair_locs: HashMap::new(),
+            pair_counts: FxHashMap::default(),
+            pair_locs: FxHashMap::default(),
         })
     }
 
