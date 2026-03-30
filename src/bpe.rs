@@ -22,6 +22,11 @@ struct PairInfo {
     locations: PairLocations,
 }
 
+enum Segment<'a> {
+    Regular(&'a str),
+    Special(&'a str),
+}
+
 /// Byte Pair Encoding model with optional special-token support.
 ///
 /// The core design treats each tokenized chunk as a mutable linked structure (`Chain`) and tracks
@@ -84,6 +89,32 @@ pub struct BPE {
 impl BPE {
     pub const DEFAULT_SPLIT_PATTERN: &str = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}++|\p{N}{1,3}+| ?[^\s\p{L}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s";
 
+    fn split_matches<'a>(&'a self, segment: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.split_pattern
+            .find_iter(segment)
+            .map(|matched| matched.expect("split regex evaluation should succeed"))
+            .map(|matched| matched.as_str())
+    }
+
+    fn for_each_segment_between_specials(
+        &self,
+        doc: &str,
+        mut on_segment: impl FnMut(Segment<'_>),
+    ) {
+        let mut cursor = 0;
+        if let Some(special_split_pattern) = &self.special_split_pattern {
+            for matched in special_split_pattern
+                .find_iter(doc)
+                .map(|matched| matched.expect("special token regex evaluation should succeed"))
+            {
+                on_segment(Segment::Regular(&doc[cursor..matched.start()]));
+                on_segment(Segment::Special(matched.as_str()));
+                cursor = matched.end();
+            }
+        }
+        on_segment(Segment::Regular(&doc[cursor..]));
+    }
+
     /// Splits input text into byte chunks for training, using special tokens only as boundaries.
     ///
     /// Training learns merges from raw byte spans, so special tokens are excluded rather than
@@ -91,29 +122,15 @@ impl BPE {
     fn split_for_training_bytes(&self, doc: impl AsRef<str>) -> Vec<SmallVec<[u8; 16]>> {
         let doc = doc.as_ref();
         let mut chunks = Vec::new();
-        let mut cursor = 0;
 
-        if let Some(special_split_pattern) = &self.special_split_pattern {
-            for matched in special_split_pattern
-                .find_iter(doc)
-                .map(|matched| matched.expect("special token regex evaluation should succeed"))
-            {
+        self.for_each_segment_between_specials(doc, |segment| {
+            if let Segment::Regular(segment) = segment {
                 chunks.extend(
-                    self.split_pattern
-                        .find_iter(&doc[cursor..matched.start()])
-                        .map(|matched| matched.expect("split regex evaluation should succeed"))
-                        .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
+                    self.split_matches(segment)
+                        .map(|matched| SmallVec::from_slice(matched.as_bytes())),
                 );
-                cursor = matched.end();
             }
-        }
-
-        chunks.extend(
-            self.split_pattern
-                .find_iter(&doc[cursor..])
-                .map(|matched| matched.expect("split regex evaluation should succeed"))
-                .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
-        );
+        });
         chunks
     }
 
@@ -348,7 +365,6 @@ impl BPE {
     /// Keeping both directions synchronized prevents stale bucket membership and ensures the
     /// "next best pair" query remains unambiguous after overlapping merges.
     fn adjust(&mut self, pair: Pair, chain_index: ChainIndex, pos: NodePos, delta: i64) {
-        let mut should_remove_pair = false;
         let (old_count, new_count) = {
             let pair_info = self.pair_info.entry(pair).or_default();
             let old_count = pair_info.count;
@@ -362,9 +378,6 @@ impl BPE {
                 pair_info.locations.insert((chain_index, pos));
             } else {
                 pair_info.locations.remove(&(chain_index, pos));
-            }
-            if new_count == 0 {
-                should_remove_pair = true;
             }
             (old_count, new_count)
         };
@@ -385,9 +398,7 @@ impl BPE {
         }
 
         if new_count == 0 {
-            if should_remove_pair {
-                self.pair_info.remove(&pair);
-            }
+            self.pair_info.remove(&pair);
             return;
         }
 
@@ -479,11 +490,11 @@ impl BPE {
             };
 
             // Materialize the merged token bytes so decoding remains a simple table lookup.
-            let new_bytes = [
-                self.vocab[&best_pair.0].as_slice(),
-                self.vocab[&best_pair.1].as_slice(),
-            ]
-            .concat();
+            let left_bytes = &self.vocab[&best_pair.0];
+            let right_bytes = &self.vocab[&best_pair.1];
+            let mut new_bytes = Vec::with_capacity(left_bytes.len() + right_bytes.len());
+            new_bytes.extend_from_slice(left_bytes);
+            new_bytes.extend_from_slice(right_bytes);
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
@@ -636,47 +647,29 @@ impl BPE {
     fn split_impl(&self, doc: impl AsRef<str>, include_special_tokens: bool) -> Vec<Chain> {
         let doc = doc.as_ref();
         let mut chains = Vec::new();
-        let mut cursor = 0;
 
-        if let Some(special_split_pattern) = &self.special_split_pattern {
-            for matched in special_split_pattern
-                .find_iter(doc)
-                .map(|matched| matched.expect("special token regex evaluation should succeed"))
-            {
+        self.for_each_segment_between_specials(doc, |segment| match segment {
+            Segment::Regular(segment) => {
                 chains.extend(
-                    self.split_pattern
-                        .find_iter(&doc[cursor..matched.start()])
-                        .map(|matched| matched.expect("split regex evaluation should succeed"))
-                        .map(|matched| Chain::new(matched.as_str().as_bytes())),
+                    self.split_matches(segment)
+                        .map(|matched| Chain::new(matched.as_bytes())),
                 );
-
-                if include_special_tokens
-                    && let Some(&token_id) = self.special_tokens.get(matched.as_str())
+            }
+            Segment::Special(special) => {
+                if include_special_tokens && let Some(&token_id) = self.special_tokens.get(special)
                 {
                     chains.push(Chain::from_token_id(token_id));
                 }
-
-                cursor = matched.end();
             }
-        }
-
-        chains.extend(
-            self.split_pattern
-                .find_iter(&doc[cursor..])
-                .map(|matched| matched.expect("split regex evaluation should succeed"))
-                .map(|matched| Chain::new(matched.as_str().as_bytes())),
-        );
+        });
         chains
     }
 
     /// Clears all learned merges while preserving the immutable base vocabulary.
     fn reset_training_state(&mut self) {
+        let special_token_ids: HashSet<_> = self.special_tokens.values().copied().collect();
         self.vocab.retain(|token_id, _| {
-            *token_id < BASE_VOCAB_SIZE
-                || self
-                    .special_tokens
-                    .values()
-                    .any(|special_id| special_id == token_id)
+            *token_id < BASE_VOCAB_SIZE || special_token_ids.contains(token_id)
         });
         self.merge_map.clear();
         self.chains.clear();
