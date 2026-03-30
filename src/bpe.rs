@@ -84,6 +84,13 @@ pub struct BPE {
 impl BPE {
     pub const DEFAULT_SPLIT_PATTERN: &str = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}++|\p{N}{1,3}+| ?[^\s\p{L}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s";
 
+    fn split_matches<'a>(&'a self, segment: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.split_pattern
+            .find_iter(segment)
+            .map(|matched| matched.expect("split regex evaluation should succeed"))
+            .map(|matched| matched.as_str())
+    }
+
     /// Splits input text into byte chunks for training, using special tokens only as boundaries.
     ///
     /// Training learns merges from raw byte spans, so special tokens are excluded rather than
@@ -99,20 +106,16 @@ impl BPE {
                 .map(|matched| matched.expect("special token regex evaluation should succeed"))
             {
                 chunks.extend(
-                    self.split_pattern
-                        .find_iter(&doc[cursor..matched.start()])
-                        .map(|matched| matched.expect("split regex evaluation should succeed"))
-                        .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
+                    self.split_matches(&doc[cursor..matched.start()])
+                        .map(|segment| SmallVec::from_slice(segment.as_bytes())),
                 );
                 cursor = matched.end();
             }
         }
 
         chunks.extend(
-            self.split_pattern
-                .find_iter(&doc[cursor..])
-                .map(|matched| matched.expect("split regex evaluation should succeed"))
-                .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
+            self.split_matches(&doc[cursor..])
+                .map(|segment| SmallVec::from_slice(segment.as_bytes())),
         );
         chunks
     }
@@ -348,7 +351,6 @@ impl BPE {
     /// Keeping both directions synchronized prevents stale bucket membership and ensures the
     /// "next best pair" query remains unambiguous after overlapping merges.
     fn adjust(&mut self, pair: Pair, chain_index: ChainIndex, pos: NodePos, delta: i64) {
-        let mut should_remove_pair = false;
         let (old_count, new_count) = {
             let pair_info = self.pair_info.entry(pair).or_default();
             let old_count = pair_info.count;
@@ -362,9 +364,6 @@ impl BPE {
                 pair_info.locations.insert((chain_index, pos));
             } else {
                 pair_info.locations.remove(&(chain_index, pos));
-            }
-            if new_count == 0 {
-                should_remove_pair = true;
             }
             (old_count, new_count)
         };
@@ -385,9 +384,7 @@ impl BPE {
         }
 
         if new_count == 0 {
-            if should_remove_pair {
-                self.pair_info.remove(&pair);
-            }
+            self.pair_info.remove(&pair);
             return;
         }
 
@@ -479,11 +476,10 @@ impl BPE {
             };
 
             // Materialize the merged token bytes so decoding remains a simple table lookup.
-            let new_bytes = [
-                self.vocab[&best_pair.0].as_slice(),
-                self.vocab[&best_pair.1].as_slice(),
-            ]
-            .concat();
+            let mut new_bytes =
+                Vec::with_capacity(self.vocab[&best_pair.0].len() + self.vocab[&best_pair.1].len());
+            new_bytes.extend_from_slice(&self.vocab[&best_pair.0]);
+            new_bytes.extend_from_slice(&self.vocab[&best_pair.1]);
             self.vocab.insert(merged_id, new_bytes);
             self.merge_map.insert(best_pair, merged_id);
 
@@ -644,10 +640,8 @@ impl BPE {
                 .map(|matched| matched.expect("special token regex evaluation should succeed"))
             {
                 chains.extend(
-                    self.split_pattern
-                        .find_iter(&doc[cursor..matched.start()])
-                        .map(|matched| matched.expect("split regex evaluation should succeed"))
-                        .map(|matched| Chain::new(matched.as_str().as_bytes())),
+                    self.split_matches(&doc[cursor..matched.start()])
+                        .map(|segment| Chain::new(segment.as_bytes())),
                 );
 
                 if include_special_tokens
@@ -661,22 +655,17 @@ impl BPE {
         }
 
         chains.extend(
-            self.split_pattern
-                .find_iter(&doc[cursor..])
-                .map(|matched| matched.expect("split regex evaluation should succeed"))
-                .map(|matched| Chain::new(matched.as_str().as_bytes())),
+            self.split_matches(&doc[cursor..])
+                .map(|segment| Chain::new(segment.as_bytes())),
         );
         chains
     }
 
     /// Clears all learned merges while preserving the immutable base vocabulary.
     fn reset_training_state(&mut self) {
+        let special_token_ids: HashSet<_> = self.special_tokens.values().copied().collect();
         self.vocab.retain(|token_id, _| {
-            *token_id < BASE_VOCAB_SIZE
-                || self
-                    .special_tokens
-                    .values()
-                    .any(|special_id| special_id == token_id)
+            *token_id < BASE_VOCAB_SIZE || special_token_ids.contains(token_id)
         });
         self.merge_map.clear();
         self.chains.clear();
