@@ -21,11 +21,8 @@ impl PyBPE {
         split_pattern: &str,
         special_tokens: Option<HashMap<String, TokenId>>,
     ) -> PyResult<Self> {
-        let inner = BPE::try_new_with_pattern_and_special_tokens(
-            split_pattern,
-            special_tokens.unwrap_or_default(),
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let inner = BPE::new(Some(split_pattern), special_tokens)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(Self { inner })
     }
 
