@@ -10,6 +10,25 @@ permissions:
   contents: read
 
 jobs:
+  conventional-commits:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Lint commit messages
+        run: |
+          npx --yes --package @commitlint/cli --package @commitlint/config-conventional commitlint --config commitlint.config.cjs --from "${{ github.event.pull_request.base.sha || github.event.before }}" --to "${{ github.sha }}" --verbose
+
   rust:
     name: Rust checks
     runs-on: ubuntu-latest
