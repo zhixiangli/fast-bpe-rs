@@ -49,7 +49,7 @@ fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let docs = load_wikitext_train_docs()?;
-    let mut bpe = BPE::try_new()?;
+    let mut bpe = BPE::new(None, None::<Vec<(String, u32)>>)?;
 
     let train_started = Instant::now();
     bpe.train(TARGET_VOCAB_SIZE, docs.iter());
