@@ -27,7 +27,7 @@ jobs:
 
       - name: Lint commit messages
         run: |
-          npx --yes commitlint --config commitlint.config.cjs --from "${{ github.event.pull_request.base.sha || github.event.before }}" --to "${{ github.sha }}" --verbose
+          npx --yes --package @commitlint/cli --package @commitlint/config-conventional commitlint --config commitlint.config.cjs --from "${{ github.event.pull_request.base.sha || github.event.before }}" --to "${{ github.sha }}" --verbose
 
   rust:
     name: Rust checks
