@@ -69,42 +69,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     let memory_stats = memory_region.change();
 
     println!(
-        "Loaded {} documents from {DATASET_REPO}/{DATASET_CONFIG} ({TRAIN_SPLIT_PREFIX}*.parquet)",
+        "RUN_CONTEXT dataset_repo={DATASET_REPO} dataset_config={DATASET_CONFIG} split_prefix={TRAIN_SPLIT_PREFIX} docs_loaded={} target_vocab_size={TARGET_VOCAB_SIZE}",
         docs.len(),
     );
-    println!("Finished BPE training up to vocab size {TARGET_VOCAB_SIZE} (speed run)");
-    println!("Speed run elapsed: {:.3?}", speed_elapsed);
-    println!("Finished BPE training up to vocab size {TARGET_VOCAB_SIZE} (memory profile run)");
-    println!("Memory profile elapsed: {:.3?}", memory_elapsed);
     println!(
-        "Memory profile bytes allocated: {}",
-        memory_stats.bytes_allocated
+        "TRAIN_RUN mode=speed elapsed_ms={}",
+        speed_elapsed.as_millis()
     );
     println!(
-        "Memory profile bytes deallocated: {}",
-        memory_stats.bytes_deallocated
+        "TRAIN_RUN mode=memory elapsed_ms={} bytes_allocated={} bytes_deallocated={} allocations={} deallocations={} reallocations={}",
+        memory_elapsed.as_millis(),
+        memory_stats.bytes_allocated,
+        memory_stats.bytes_deallocated,
+        memory_stats.allocations,
+        memory_stats.deallocations,
+        memory_stats.reallocations,
     );
-    println!(
-        "Memory profile reallocations: {}",
-        memory_stats.reallocations
-    );
-    println!("Memory profile allocations: {}", memory_stats.allocations);
-    println!(
-        "Memory profile deallocations: {}",
-        memory_stats.deallocations
-    );
-
-    let paragraph = "Fast-BPE-RS now supports both library usage and `cargo run` demos. \
-After training on WikiText, this paragraph is encoded into token ids and decoded back into text.";
-    println!("\nOriginal paragraph:\n{paragraph}");
-
-    let encoded = bpe_speed.encode(paragraph);
-    println!("\nEncoded token ids:\n{encoded:?}");
-
-    let decoded_bytes = bpe_speed.decode(encoded.iter().copied());
-    let decoded_text = String::from_utf8(decoded_bytes)?;
-    println!("\nDecoded paragraph:\n{decoded_text}");
-    println!("\nRoundtrip exact match: {}", paragraph == decoded_text);
+    println!("TRAINING_COMPLETE speed_and_memory_runs_finished=true");
 
     Ok(())
 }
