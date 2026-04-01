@@ -55,12 +55,16 @@ fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let docs = load_wikitext_train_docs()?;
+<<<<<<< codex/run-train-for-speed-and-memory
     let mut bpe_speed = BPE::try_new()?;
     let mut bpe_memory = BPE::try_new()?;
 
     let speed_started = Instant::now();
     bpe_speed.train(TARGET_VOCAB_SIZE, docs.iter());
     let speed_elapsed = speed_started.elapsed();
+=======
+    let mut bpe = BPE::new(None, None::<Vec<(String, u32)>>)?;
+>>>>>>> main
 
     let memory_region = Region::new(&GLOBAL);
     let memory_started = Instant::now();

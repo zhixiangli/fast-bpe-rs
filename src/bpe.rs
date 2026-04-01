@@ -222,69 +222,30 @@ impl BPE {
             )
     }
 
-    /// Constructs a model with the default split regex and panics if configuration is invalid.
-    pub fn new() -> Self {
-        Self::try_new().expect("invalid split regex")
-    }
-
-    /// Constructs a model and panics if the split regex is invalid.
-    pub fn new_with_pattern(split_pattern: impl AsRef<str>) -> Self {
-        Self::try_new_with_pattern(split_pattern).expect("invalid split regex")
-    }
-
-    /// Constructs a model with special tokens and panics on invalid configuration.
-    pub fn new_with_special_tokens(
-        special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
-    ) -> Self {
-        Self::try_new_with_special_tokens(special_tokens)
-            .expect("invalid split regex or special token configuration")
-    }
-
-    /// Constructs a model with custom split regex and special tokens.
-    pub fn new_with_pattern_and_special_tokens(
-        split_pattern: impl AsRef<str>,
-        special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
-    ) -> Self {
-        Self::try_new_with_pattern_and_special_tokens(split_pattern, special_tokens)
-            .expect("invalid split regex or special token configuration")
-    }
-
-    /// Fallible constructor without special tokens, using the default split regex.
-    pub fn try_new() -> Result<Self, BPEError> {
-        Self::try_new_with_pattern(Self::DEFAULT_SPLIT_PATTERN)
-    }
-
-    /// Fallible constructor with custom split regex but no special tokens.
-    pub fn try_new_with_pattern(split_pattern: impl AsRef<str>) -> Result<Self, BPEError> {
-        Self::try_new_with_pattern_and_special_tokens(
-            split_pattern,
-            std::iter::empty::<(String, TokenId)>(),
-        )
-    }
-
-    /// Fallible constructor with special tokens using the default split regex.
-    pub fn try_new_with_special_tokens(
-        special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
-    ) -> Result<Self, BPEError> {
-        Self::try_new_with_pattern_and_special_tokens(Self::DEFAULT_SPLIT_PATTERN, special_tokens)
-    }
-
-    /// Fallible constructor with custom split regex and special tokens.
+    /// Constructs a model with optional split regex and optional special tokens.
+    ///
+    /// When `split_pattern` is `None`, the default split regex is used.
+    /// When `special_tokens` is `None`, no special tokens are configured.
     ///
     /// Special-token ids must live above the byte vocabulary so the base 0..=255 range remains a
     /// lossless representation of raw bytes.
-    pub fn try_new_with_pattern_and_special_tokens(
-        split_pattern: impl AsRef<str>,
-        special_tokens: impl IntoIterator<Item = (impl Into<String>, TokenId)>,
+    pub fn new(
+        split_pattern: Option<&str>,
+        special_tokens: Option<impl IntoIterator<Item = (impl Into<String>, TokenId)>>,
     ) -> Result<Self, BPEError> {
-        let split_pattern = Regex::new(split_pattern.as_ref()).map_err(BPEError::from)?;
+        let split_pattern = Regex::new(split_pattern.unwrap_or(Self::DEFAULT_SPLIT_PATTERN))
+            .map_err(BPEError::from)?;
         let mut vocab: HashMap<TokenId, Vec<u8>> = (0..BASE_VOCAB_SIZE)
             .map(|byte| (byte, vec![byte as u8]))
             .collect();
         let mut special_token_map = HashMap::new();
         let mut used_special_ids = HashSet::new();
 
-        for (token, token_id) in special_tokens {
+        for (token, token_id) in special_tokens
+            .map(IntoIterator::into_iter)
+            .into_iter()
+            .flatten()
+        {
             let token = token.into();
             if token_id < BASE_VOCAB_SIZE {
                 return Err(BPEError::SpecialTokenIdOverlapsBaseVocab { token, token_id });
@@ -682,7 +643,8 @@ impl BPE {
 
 impl Default for BPE {
     fn default() -> Self {
-        Self::new()
+        Self::new(None, None::<Vec<(String, TokenId)>>)
+            .expect("default configuration should be valid")
     }
 }
 
@@ -692,7 +654,8 @@ mod tests {
 
     #[test]
     fn train_learns_most_frequent_pair_and_roundtrips() {
-        let mut bpe = BPE::new_with_pattern("(?s).+");
+        let mut bpe = BPE::new(Some("(?s).+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(257, ["abababa"]);
 
         assert_eq!(bpe.vocab.get(&256), Some(&b"ab".to_vec()));
@@ -705,7 +668,8 @@ mod tests {
 
     #[test]
     fn train_aggregates_identical_chunks_and_weights_pair_counts() {
-        let mut bpe = BPE::new_with_pattern("\\S+");
+        let mut bpe = BPE::new(Some("\\S+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(258, ["the the", "the"]);
 
         assert_eq!(bpe.chains.len(), 1);
@@ -718,8 +682,8 @@ mod tests {
 
     #[test]
     fn split_for_training_bytes_uses_special_tokens_as_boundaries() {
-        let bpe =
-            BPE::new_with_pattern_and_special_tokens("(?s).+", [("<|eot|>", BASE_VOCAB_SIZE)]);
+        let bpe = BPE::new(Some("(?s).+"), Some([("<|eot|>", BASE_VOCAB_SIZE)]))
+            .expect("valid config should construct");
         let chunks = bpe.split_for_training_bytes("left<|eot|>right");
         assert_eq!(
             chunks.iter().map(SmallVec::as_slice).collect::<Vec<_>>(),
@@ -729,7 +693,8 @@ mod tests {
 
     #[test]
     fn training_handles_overlapping_pairs_without_corrupting_state() {
-        let mut bpe = BPE::new_with_pattern("(?s).+");
+        let mut bpe = BPE::new(Some("(?s).+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(258, ["aaaa"]);
 
         assert_eq!(bpe.vocab.get(&256), Some(&b"aa".to_vec()));
@@ -740,7 +705,8 @@ mod tests {
 
     #[test]
     fn split_pattern_keeps_merges_scoped_to_each_match() {
-        let mut bpe = BPE::new_with_pattern("\\S+");
+        let mut bpe = BPE::new(Some("\\S+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(257, ["go go", "go stop"]);
 
         assert_eq!(bpe.vocab.get(&256), Some(&b"go".to_vec()));
@@ -763,7 +729,8 @@ mod tests {
 
     #[test]
     fn training_with_empty_input_keeps_base_state() {
-        let mut bpe = BPE::new_with_pattern("(?s).+");
+        let mut bpe = BPE::new(Some("(?s).+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(300, std::iter::empty::<&str>());
 
         assert!(bpe.encode("").is_empty());
@@ -778,7 +745,8 @@ mod tests {
 
     #[test]
     fn requesting_base_vocab_size_keeps_byte_level_encoding() {
-        let mut bpe = BPE::new_with_pattern("(?s).+");
+        let mut bpe = BPE::new(Some("(?s).+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(BASE_VOCAB_SIZE, ["banana"]);
 
         let encoded = bpe.encode("banana");
@@ -795,7 +763,8 @@ mod tests {
 
     #[test]
     fn retraining_replaces_previous_merge_state() {
-        let mut bpe = BPE::new_with_pattern("(?s).+");
+        let mut bpe = BPE::new(Some("(?s).+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(257, ["aaaa"]);
         let first_encoding = bpe.encode("aaaa");
         assert_eq!(first_encoding, vec![256, 256]);
@@ -810,7 +779,8 @@ mod tests {
 
     #[test]
     fn encode_prefers_lowest_merge_id_when_multiple_pairs_match() {
-        let mut bpe = BPE::new_with_pattern("(?s).+");
+        let mut bpe = BPE::new(Some("(?s).+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(259, ["abba"]);
 
         assert_eq!(bpe.merge_map.get(&(b'a' as u32, b'b' as u32)), Some(&256));
@@ -821,7 +791,7 @@ mod tests {
 
     #[test]
     fn try_new_with_special_tokens_rejects_ids_in_base_vocab() {
-        let err = BPE::try_new_with_pattern_and_special_tokens("(?s).+", [("<pad>", 42)])
+        let err = BPE::new(Some("(?s).+"), Some([("<pad>", 42)]))
             .expect_err("special token ids below the byte vocabulary should be rejected");
 
         assert!(matches!(
@@ -833,11 +803,8 @@ mod tests {
 
     #[test]
     fn try_new_with_special_tokens_rejects_duplicate_ids() {
-        let err = BPE::try_new_with_pattern_and_special_tokens(
-            "(?s).+",
-            [("<pad>", 512), ("<eos>", 512)],
-        )
-        .expect_err("duplicate special token ids should be rejected");
+        let err = BPE::new(Some("(?s).+"), Some([("<pad>", 512), ("<eos>", 512)]))
+            .expect_err("duplicate special token ids should be rejected");
 
         assert!(matches!(
             err,
@@ -848,13 +815,13 @@ mod tests {
 
     #[test]
     fn try_new_returns_error_for_invalid_regex() {
-        assert!(BPE::try_new_with_pattern("(").is_err());
+        assert!(BPE::new(Some("("), None::<Vec<(String, TokenId)>>).is_err());
     }
 
     #[test]
     fn training_split_uses_special_tokens_as_boundaries_without_emitting_them() {
-        let bpe =
-            BPE::new_with_pattern_and_special_tokens(r"\S+", [("<pad>", 300), ("<eos>", 301)]);
+        let bpe = BPE::new(Some(r"\S+"), Some([("<pad>", 300), ("<eos>", 301)]))
+            .expect("valid config should construct");
         assert_eq!(
             bpe.split_for_training_bytes("hi<pad><eos>there")
                 .iter()
@@ -866,8 +833,8 @@ mod tests {
 
     #[test]
     fn special_tokens_keep_custom_ids_and_roundtrip_without_splitting() {
-        let bpe =
-            BPE::new_with_pattern_and_special_tokens("\\S+", [("<pad>", 1024), ("<eos>", 2048)]);
+        let bpe = BPE::new(Some("\\S+"), Some([("<pad>", 1024), ("<eos>", 2048)]))
+            .expect("valid config should construct");
 
         assert_eq!(
             bpe.encode("hi<pad><eos>there"),
@@ -888,8 +855,8 @@ mod tests {
 
     #[test]
     fn special_tokens_do_not_merge_with_neighbors_or_each_other() {
-        let mut bpe =
-            BPE::new_with_pattern_and_special_tokens("(?s).+", [("<pad>", 300), ("<eos>", 301)]);
+        let mut bpe = BPE::new(Some("(?s).+"), Some([("<pad>", 300), ("<eos>", 301)]))
+            .expect("valid config should construct");
         bpe.train(305, ["a<pad>a<pad>", "<pad><eos><pad>"]);
 
         assert!(
@@ -905,8 +872,8 @@ mod tests {
 
     #[test]
     fn split_includes_special_tokens_as_single_node_chains() {
-        let bpe =
-            BPE::new_with_pattern_and_special_tokens(r"\S+", [("<pad>", 300), ("<eos>", 301)]);
+        let bpe = BPE::new(Some(r"\S+"), Some([("<pad>", 300), ("<eos>", 301)]))
+            .expect("valid config should construct");
 
         let chains = bpe.split("hi<pad>there<eos>");
         let tokens_per_chain: Vec<Vec<TokenId>> = chains
@@ -933,15 +900,16 @@ mod tests {
 
     #[test]
     fn build_special_token_pattern_prefers_longer_tokens_before_prefixes() {
-        let bpe = BPE::new_with_pattern_and_special_tokens(r"\S+", [("<e>", 400), ("<eos>", 401)]);
+        let bpe = BPE::new(Some(r"\S+"), Some([("<e>", 400), ("<eos>", 401)]))
+            .expect("valid config should construct");
 
         assert_eq!(bpe.encode("<eos><e>"), vec![401, 400]);
     }
 
     #[test]
     fn split_preserves_document_order_across_regular_and_special_segments() {
-        let bpe =
-            BPE::new_with_pattern_and_special_tokens(r"\S+", [("<pad>", 300), ("<eos>", 301)]);
+        let bpe = BPE::new(Some(r"\S+"), Some([("<pad>", 300), ("<eos>", 301)]))
+            .expect("valid config should construct");
 
         let chains = bpe.split("x<eos>y<pad>z");
         let tokens_per_chain: Vec<Vec<TokenId>> = chains
@@ -963,8 +931,8 @@ mod tests {
 
     #[test]
     fn train_skips_reserved_special_token_ids_when_assigning_merges() {
-        let mut bpe =
-            BPE::new_with_pattern_and_special_tokens("(?s).+", [("<pad>", 256), ("<eos>", 257)]);
+        let mut bpe = BPE::new(Some("(?s).+"), Some([("<pad>", 256), ("<eos>", 257)]))
+            .expect("valid config should construct");
         bpe.train(260, ["abab"]);
 
         assert_eq!(bpe.merge_map.get(&(b'a' as u32, b'b' as u32)), Some(&258));
@@ -975,7 +943,8 @@ mod tests {
 
     #[test]
     fn train_stops_when_no_mergeable_pairs_exist() {
-        let mut bpe = BPE::new_with_pattern("(?s).+");
+        let mut bpe = BPE::new(Some("(?s).+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(300, ["a", "b", "c"]);
 
         assert!(bpe.merge_map.is_empty());
@@ -988,15 +957,16 @@ mod tests {
 
     #[test]
     fn encode_returns_only_special_tokens_when_input_is_only_specials() {
-        let bpe =
-            BPE::new_with_pattern_and_special_tokens(r"\S+", [("<pad>", 600), ("<eos>", 601)]);
+        let bpe = BPE::new(Some(r"\S+"), Some([("<pad>", 600), ("<eos>", 601)]))
+            .expect("valid config should construct");
 
         assert_eq!(bpe.encode("<pad><eos><pad>"), vec![600, 601, 600]);
     }
 
     #[test]
     fn train_deduplicates_chunks_across_split_batches() {
-        let mut bpe = BPE::new_with_pattern("(?s).+");
+        let mut bpe = BPE::new(Some("(?s).+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         let doc_count = 1_017;
         let docs = std::iter::repeat_n("xy", doc_count);
 
@@ -1009,7 +979,8 @@ mod tests {
 
     #[test]
     fn reset_training_state_preserves_special_tokens_between_retrains() {
-        let mut bpe = BPE::new_with_pattern_and_special_tokens("(?s).+", [("<pad>", 700)]);
+        let mut bpe = BPE::new(Some("(?s).+"), Some([("<pad>", 700)]))
+            .expect("valid config should construct");
         bpe.train(258, ["abab"]);
         assert!(bpe.vocab.contains_key(&700));
 
@@ -1022,7 +993,8 @@ mod tests {
 
     #[test]
     fn train_uses_stable_pair_order_when_frequencies_tie() {
-        let mut bpe = BPE::new_with_pattern("\\S+");
+        let mut bpe = BPE::new(Some("\\S+"), None::<Vec<(String, TokenId)>>)
+            .expect("valid regex should construct");
         bpe.train(258, ["ab ac"]);
 
         assert_eq!(bpe.merge_map.get(&(b'a' as u32, b'b' as u32)), Some(&256));
@@ -1032,7 +1004,8 @@ mod tests {
 
     #[test]
     fn encode_of_empty_string_is_empty_even_with_special_tokens_configured() {
-        let bpe = BPE::new_with_pattern_and_special_tokens(r"\S+", [("<pad>", 900)]);
+        let bpe =
+            BPE::new(Some(r"\S+"), Some([("<pad>", 900)])).expect("valid config should construct");
 
         assert!(bpe.encode("").is_empty());
         assert!(bpe.split("").is_empty());
