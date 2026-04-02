@@ -4,19 +4,30 @@ use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::RowAccessor;
 use stats_alloc::{Region, StatsAlloc};
 use std::alloc::System;
+use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::time::Instant;
 
 const DATASET_REPO: &str = "Salesforce/wikitext";
-const DATASET_CONFIG: &str = "wikitext-103-raw-v1";
+const DATASET_CONFIG_DEFAULT: &str = "wikitext-103-raw-v1";
+const DATASET_CONFIG_SMALL: &str = "wikitext-2-raw-v1";
 const TRAIN_SPLIT_PREFIX: &str = "train-";
 const TARGET_VOCAB_SIZE: u32 = 1 << 15;
 
 #[global_allocator]
 static GLOBAL: StatsAlloc<System> = StatsAlloc::system();
 
-fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
+fn parse_dataset_config() -> &'static str {
+    let use_small_dataset = env::args().skip(1).any(|arg| arg == "--small-dataset");
+    if use_small_dataset {
+        DATASET_CONFIG_SMALL
+    } else {
+        DATASET_CONFIG_DEFAULT
+    }
+}
+
+fn load_wikitext_train_docs(dataset_config: &str) -> Result<Vec<String>, Box<dyn Error>> {
     let api = Api::new()?;
     let dataset = api.dataset(DATASET_REPO.to_owned());
     let repo_info = dataset.info()?;
@@ -26,7 +37,7 @@ fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
         .into_iter()
         .map(|sibling| sibling.rfilename)
         .filter(|path| {
-            path.starts_with(DATASET_CONFIG)
+            path.starts_with(dataset_config)
                 && path.ends_with(".parquet")
                 && path
                     .rsplit('/')
@@ -54,7 +65,8 @@ fn load_wikitext_train_docs() -> Result<Vec<String>, Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let docs = load_wikitext_train_docs()?;
+    let dataset_config = parse_dataset_config();
+    let docs = load_wikitext_train_docs(dataset_config)?;
     let mut bpe_speed = BPE::new(None, None::<Vec<(String, u32)>>)?;
     let mut bpe_memory = BPE::new(None, None::<Vec<(String, u32)>>)?;
 
@@ -69,7 +81,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let memory_stats = memory_region.change();
 
     println!(
-        "RUN_CONTEXT dataset_repo={DATASET_REPO} dataset_config={DATASET_CONFIG} split_prefix={TRAIN_SPLIT_PREFIX} docs_loaded={} target_vocab_size={TARGET_VOCAB_SIZE}",
+        "RUN_CONTEXT dataset_repo={DATASET_REPO} dataset_config={dataset_config} split_prefix={TRAIN_SPLIT_PREFIX} docs_loaded={} target_vocab_size={TARGET_VOCAB_SIZE}",
         docs.len(),
     );
     println!(
