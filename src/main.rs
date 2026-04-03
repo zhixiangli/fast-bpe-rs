@@ -129,14 +129,43 @@ fn main() -> Result<(), Box<dyn Error>> {
         bpe_memory.train(TARGET_VOCAB_SIZE, docs.iter());
         let memory_elapsed = memory_started.elapsed();
         let memory_stats = memory_region.change();
+        let net_bytes = memory_stats
+            .bytes_allocated
+            .saturating_sub(memory_stats.bytes_deallocated);
+        let avg_alloc_size_bytes = if memory_stats.allocations > 0 {
+            memory_stats.bytes_allocated / memory_stats.allocations
+        } else {
+            0
+        };
+        let avg_dealloc_size_bytes = if memory_stats.deallocations > 0 {
+            memory_stats.bytes_deallocated / memory_stats.deallocations
+        } else {
+            0
+        };
+        let allocs_per_dealloc = if memory_stats.deallocations > 0 {
+            memory_stats.allocations as f64 / memory_stats.deallocations as f64
+        } else {
+            f64::INFINITY
+        };
+        let train_seconds = memory_elapsed.as_secs_f64();
+        let allocation_rate_bytes_per_sec = if train_seconds > 0.0 {
+            memory_stats.bytes_allocated as f64 / train_seconds
+        } else {
+            0.0
+        };
         println!(
-            "TRAIN_RUN mode=memory elapsed_ms={} bytes_allocated={} bytes_deallocated={} allocations={} deallocations={} reallocations={}",
+            "TRAIN_RUN mode=memory elapsed_ms={} bytes_allocated={} bytes_deallocated={} net_bytes={} allocations={} deallocations={} reallocations={} avg_alloc_size_bytes={} avg_dealloc_size_bytes={} allocs_per_dealloc={:.4} allocation_rate_bytes_per_sec={:.2}",
             memory_elapsed.as_millis(),
             memory_stats.bytes_allocated,
             memory_stats.bytes_deallocated,
+            net_bytes,
             memory_stats.allocations,
             memory_stats.deallocations,
             memory_stats.reallocations,
+            avg_alloc_size_bytes,
+            avg_dealloc_size_bytes,
+            allocs_per_dealloc,
+            allocation_rate_bytes_per_sec,
         );
     }
 
