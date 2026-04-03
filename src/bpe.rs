@@ -1,6 +1,8 @@
 use crate::chain::Chain;
 use crate::error::BPEError;
-use crate::types::{BASE_VOCAB_SIZE, ChainIndex, NodePos, Pair, PairLocations, SeedMap, TokenId};
+use crate::types::{
+    BASE_VOCAB_SIZE, ChainIndex, NodePos, PairLocations, SeedMap, TokenId, TokenIdPair,
+};
 use ahash::AHashMap;
 use fancy_regex::{Regex, escape};
 use rayon::prelude::*;
@@ -64,7 +66,7 @@ pub struct BPE {
     /// Vocabulary entries materialized as raw bytes for decode/inspection.
     pub(crate) vocab: HashMap<TokenId, Vec<u8>>, // id -> bytes
     /// Learned merge rules keyed by `(left, right)` token pairs.
-    pub(crate) merge_map: HashMap<Pair, TokenId>, // pair -> merged id
+    pub(crate) merge_map: HashMap<TokenIdPair, TokenId>, // pair -> merged id
 
     // Training-time index structures.
     //
@@ -80,9 +82,9 @@ pub struct BPE {
     // `max_pair_count` points to the highest non-empty count bucket, so selecting the current
     // best merge is an O(1)-expected bucket lookup plus tie-break in that bucket.
     chains: Vec<WeightedChain>,
-    count_to_pairs: Vec<FxHashSet<Pair>>, // frequency -> pairs
-    max_pair_count: u32,                  // largest non-empty frequency bucket
-    pair_info: FxHashMap<Pair, PairInfo>, // pair -> {frequency, (chain_idx, node_pos)}
+    count_to_pairs: Vec<FxHashSet<TokenIdPair>>, // frequency -> pairs
+    max_pair_count: u32,                         // largest non-empty frequency bucket
+    pair_info: FxHashMap<TokenIdPair, PairInfo>, // pair -> {frequency, (chain_idx, node_pos)}
 }
 
 impl BPE {
@@ -324,7 +326,7 @@ impl BPE {
     ///
     /// Keeping both directions synchronized prevents stale bucket membership and ensures the
     /// "next best pair" query remains unambiguous after overlapping merges.
-    fn adjust(&mut self, pair: Pair, chain_index: ChainIndex, pos: NodePos, delta: i64) {
+    fn adjust(&mut self, pair: TokenIdPair, chain_index: ChainIndex, pos: NodePos, delta: i64) {
         let (old_count, new_count) = {
             let pair_info = self.pair_info.entry(pair).or_default();
             let old_count = pair_info.count;
@@ -370,14 +372,14 @@ impl BPE {
         self.max_pair_count = self.max_pair_count.max(new_count);
     }
 
-    fn best_pair(&self) -> Option<Pair> {
+    fn best_pair(&self) -> Option<TokenIdPair> {
         self.count_to_pairs
             .get(self.max_pair_count as usize)
             .and_then(|bucket| bucket.iter().min())
             .copied()
     }
 
-    fn register_merged_token(&mut self, merged_id: TokenId, pair: Pair) {
+    fn register_merged_token(&mut self, merged_id: TokenId, pair: TokenIdPair) {
         let left_bytes = &self.vocab[&pair.0];
         let right_bytes = &self.vocab[&pair.1];
         let mut new_bytes = Vec::with_capacity(left_bytes.len() + right_bytes.len());
@@ -387,7 +389,7 @@ impl BPE {
         self.merge_map.insert(pair, merged_id);
     }
 
-    fn take_pair_locations(&mut self, pair: Pair) -> Vec<(ChainIndex, NodePos)> {
+    fn take_pair_locations(&mut self, pair: TokenIdPair) -> Vec<(ChainIndex, NodePos)> {
         let removed_pair_info = self.pair_info.remove(&pair);
         let pair_locations = removed_pair_info
             .as_ref()
@@ -410,7 +412,7 @@ impl BPE {
     fn apply_pair_merge_at(
         &mut self,
         chains: &mut [WeightedChain],
-        pair: Pair,
+        pair: TokenIdPair,
         merged_id: TokenId,
         chain_index: ChainIndex,
         left_pos: NodePos,
