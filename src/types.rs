@@ -6,10 +6,10 @@ pub(crate) type TokenId = u32;
 /// Index into a [`crate::chain::Chain`] node buffer.
 pub(crate) type NodePos = u32;
 /// Adjacent token pair used as the key for merge rules.
-pub(crate) type Pair = (TokenId, TokenId);
+pub(crate) type TokenIdPair = (TokenId, TokenId);
 /// Index into [`crate::bpe::BPE`] training chains.
 pub(crate) type ChainIndex = usize;
 /// All observed locations for a pair, ordered deterministically for stable iteration.
 pub(crate) type PairLocations = rustc_hash::FxHashSet<(ChainIndex, NodePos)>;
 /// Fast hash map used for pair-keyed training indexes.
-pub(crate) type SeedMap<V> = rustc_hash::FxHashMap<Pair, V>;
+pub(crate) type SeedMap<V> = rustc_hash::FxHashMap<TokenIdPair, V>;
