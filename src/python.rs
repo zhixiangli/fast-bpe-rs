@@ -21,24 +21,38 @@ impl PyBPE {
         split_pattern: &str,
         special_tokens: Option<HashMap<String, TokenId>>,
     ) -> PyResult<Self> {
+        log::info!(
+            "creating python BPE wrapper split_pattern_len={} special_tokens={}",
+            split_pattern.len(),
+            special_tokens.as_ref().map_or(0, HashMap::len)
+        );
         let inner = BPE::new(Some(split_pattern), special_tokens)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        log::debug!("python BPE wrapper created successfully");
         Ok(Self { inner })
     }
 
     /// Trains the model in place from a list of Python strings.
     fn train(&mut self, vocab_size: TokenId, docs: Vec<String>) {
+        log::info!(
+            "training python BPE vocab_size={} docs={}",
+            vocab_size,
+            docs.len()
+        );
         self.inner
             .train(vocab_size, docs.iter().map(String::as_str));
+        log::debug!("python BPE training completed");
     }
 
     /// Encodes a string into token ids.
     fn encode(&self, doc: &str) -> Vec<TokenId> {
+        log::debug!("encoding text bytes={}", doc.len());
         self.inner.encode(doc)
     }
 
     /// Decodes token ids into raw Python `bytes`.
     fn decode<'py>(&self, py: Python<'py>, token_ids: Vec<TokenId>) -> Bound<'py, PyBytes> {
+        log::debug!("decoding token ids count={} to bytes", token_ids.len());
         let bytes = self.inner.decode(token_ids);
         PyBytes::new(py, &bytes)
     }
@@ -49,10 +63,15 @@ impl PyBPE {
         py: Python<'py>,
         token_ids: Vec<TokenId>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        log::debug!(
+            "decoding token ids count={} to utf-8 string",
+            token_ids.len()
+        );
         let bytes = self.inner.decode(token_ids);
         match String::from_utf8(bytes) {
             Ok(text) => Ok(text.into_pyobject(py)?.into_any()),
             Err(err) => {
+                log::warn!("decode_to_string encountered invalid utf-8");
                 let utf8_err = err.utf8_error();
                 Err(PyUnicodeDecodeError::new_utf8(py, err.as_bytes(), utf8_err)?.into())
             }
