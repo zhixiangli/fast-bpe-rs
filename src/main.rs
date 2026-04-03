@@ -18,51 +18,29 @@ const TARGET_VOCAB_SIZE: u32 = 1 << 15;
 #[global_allocator]
 static GLOBAL: StatsAlloc<System> = StatsAlloc::system();
 
-#[derive(Clone, Copy)]
-enum TrainMode {
-    Speed,
-    Memory,
-    Both,
+struct CliOptions {
+    dataset_config: &'static str,
+    run_speed: bool,
+    run_memory: bool,
 }
 
-impl TrainMode {
-    fn from_cli_arg(value: &str) -> Result<Self, Box<dyn Error>> {
-        match value {
-            "speed" => Ok(Self::Speed),
-            "memory" => Ok(Self::Memory),
-            "both" => Ok(Self::Both),
-            _ => Err(format!(
-                "invalid value for --run-mode: {value}. Expected one of: speed, memory, both"
-            )
-            .into()),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Speed => "speed",
-            Self::Memory => "memory",
-            Self::Both => "both",
-        }
-    }
-}
-
-fn parse_cli_options() -> Result<(&'static str, TrainMode), Box<dyn Error>> {
+fn parse_cli_options() -> Result<CliOptions, Box<dyn Error>> {
     let mut dataset_config = DATASET_CONFIG_DEFAULT;
-    let mut train_mode = TrainMode::Both;
+    let mut speed_flag = false;
+    let mut memory_flag = false;
 
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
+    for arg in env::args().skip(1) {
         match arg.as_str() {
             "--small-dataset" => dataset_config = DATASET_CONFIG_SMALL,
-            "--run-mode" => {
-                let mode_value = args
-                    .next()
-                    .ok_or_else(|| "missing value for --run-mode".to_string())?;
-                train_mode = TrainMode::from_cli_arg(&mode_value)?;
-            }
+            "--speed" => speed_flag = true,
+            "--memory" => memory_flag = true,
             "--help" | "-h" => {
-                println!("Usage: fast-bpe-rs [--small-dataset] [--run-mode <speed|memory|both>]");
+                println!("Usage: fast-bpe-rs [--small-dataset] [--speed] [--memory]");
+                println!(
+                    "  --small-dataset   Use wikitext-2-raw-v1 instead of wikitext-103-raw-v1"
+                );
+                println!("  --speed           Run speed benchmark");
+                println!("  --memory          Run memory benchmark");
                 std::process::exit(0);
             }
             _ => {
@@ -74,7 +52,14 @@ fn parse_cli_options() -> Result<(&'static str, TrainMode), Box<dyn Error>> {
         }
     }
 
-    Ok((dataset_config, train_mode))
+    let run_speed = speed_flag || !memory_flag;
+    let run_memory = memory_flag || !speed_flag;
+
+    Ok(CliOptions {
+        dataset_config,
+        run_speed,
+        run_memory,
+    })
 }
 
 fn load_wikitext_train_docs(dataset_config: &str) -> Result<Vec<String>, Box<dyn Error>> {
@@ -115,75 +100,49 @@ fn load_wikitext_train_docs(dataset_config: &str) -> Result<Vec<String>, Box<dyn
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let (dataset_config, train_mode) = parse_cli_options()?;
-    let docs = load_wikitext_train_docs(dataset_config)?;
+    let options = parse_cli_options()?;
+    let docs = load_wikitext_train_docs(options.dataset_config)?;
 
     println!(
-        "RUN_CONTEXT dataset_repo={DATASET_REPO} dataset_config={dataset_config} split_prefix={TRAIN_SPLIT_PREFIX} docs_loaded={} target_vocab_size={TARGET_VOCAB_SIZE}",
+        "RUN_CONTEXT dataset_repo={DATASET_REPO} dataset_config={} split_prefix={TRAIN_SPLIT_PREFIX} docs_loaded={} target_vocab_size={TARGET_VOCAB_SIZE} run_speed={} run_memory={}",
+        options.dataset_config,
         docs.len(),
+        options.run_speed,
+        options.run_memory,
     );
 
-    match train_mode {
-        TrainMode::Speed => {
-            let mut bpe_speed = BPE::new(None, None::<Vec<(String, u32)>>)?;
-            let speed_started = Instant::now();
-            bpe_speed.train(TARGET_VOCAB_SIZE, docs.iter());
-            let speed_elapsed = speed_started.elapsed();
-            println!(
-                "TRAIN_RUN mode=speed elapsed_ms={}",
-                speed_elapsed.as_millis()
-            );
-        }
-        TrainMode::Memory => {
-            let mut bpe_memory = BPE::new(None, None::<Vec<(String, u32)>>)?;
-            let memory_region = Region::new(&GLOBAL);
-            let memory_started = Instant::now();
-            bpe_memory.train(TARGET_VOCAB_SIZE, docs.iter());
-            let memory_elapsed = memory_started.elapsed();
-            let memory_stats = memory_region.change();
-            println!(
-                "TRAIN_RUN mode=memory elapsed_ms={} bytes_allocated={} bytes_deallocated={} allocations={} deallocations={} reallocations={}",
-                memory_elapsed.as_millis(),
-                memory_stats.bytes_allocated,
-                memory_stats.bytes_deallocated,
-                memory_stats.allocations,
-                memory_stats.deallocations,
-                memory_stats.reallocations,
-            );
-        }
-        TrainMode::Both => {
-            let mut bpe_speed = BPE::new(None, None::<Vec<(String, u32)>>)?;
-            let mut bpe_memory = BPE::new(None, None::<Vec<(String, u32)>>)?;
+    if options.run_speed {
+        let mut bpe_speed = BPE::new(None, None::<Vec<(String, u32)>>)?;
+        let speed_started = Instant::now();
+        bpe_speed.train(TARGET_VOCAB_SIZE, docs.iter());
+        let speed_elapsed = speed_started.elapsed();
+        println!(
+            "TRAIN_RUN mode=speed elapsed_ms={}",
+            speed_elapsed.as_millis()
+        );
+    }
 
-            let speed_started = Instant::now();
-            bpe_speed.train(TARGET_VOCAB_SIZE, docs.iter());
-            let speed_elapsed = speed_started.elapsed();
-
-            let memory_region = Region::new(&GLOBAL);
-            let memory_started = Instant::now();
-            bpe_memory.train(TARGET_VOCAB_SIZE, docs.iter());
-            let memory_elapsed = memory_started.elapsed();
-            let memory_stats = memory_region.change();
-
-            println!(
-                "TRAIN_RUN mode=speed elapsed_ms={}",
-                speed_elapsed.as_millis()
-            );
-            println!(
-                "TRAIN_RUN mode=memory elapsed_ms={} bytes_allocated={} bytes_deallocated={} allocations={} deallocations={} reallocations={}",
-                memory_elapsed.as_millis(),
-                memory_stats.bytes_allocated,
-                memory_stats.bytes_deallocated,
-                memory_stats.allocations,
-                memory_stats.deallocations,
-                memory_stats.reallocations,
-            );
-        }
+    if options.run_memory {
+        let mut bpe_memory = BPE::new(None, None::<Vec<(String, u32)>>)?;
+        let memory_region = Region::new(&GLOBAL);
+        let memory_started = Instant::now();
+        bpe_memory.train(TARGET_VOCAB_SIZE, docs.iter());
+        let memory_elapsed = memory_started.elapsed();
+        let memory_stats = memory_region.change();
+        println!(
+            "TRAIN_RUN mode=memory elapsed_ms={} bytes_allocated={} bytes_deallocated={} allocations={} deallocations={} reallocations={}",
+            memory_elapsed.as_millis(),
+            memory_stats.bytes_allocated,
+            memory_stats.bytes_deallocated,
+            memory_stats.allocations,
+            memory_stats.deallocations,
+            memory_stats.reallocations,
+        );
     }
 
     println!(
-        "TRAINING_COMPLETE mode={} finished=true",
-        train_mode.as_str()
+        "TRAINING_COMPLETE run_speed={} run_memory={} finished=true",
+        options.run_speed, options.run_memory
     );
 
     Ok(())
