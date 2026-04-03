@@ -42,10 +42,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up Rust
+      - name: Set up Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Set up Rust (nightly for udeps)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -55,6 +60,11 @@ jobs:
 
       - name: Lint Rust
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Install cargo-udeps
+        run: cargo install cargo-udeps --locked
+
+      - name: Check for unused Rust dependencies
+        run: cargo +nightly udeps --all-targets --all-features
 
       - name: Run Rust tests
         run: cargo test --all-features

@@ -49,6 +49,13 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      - id: rust-cargo-udeps
+        name: "rust: cargo udeps"
+        entry: cargo +nightly udeps --all-targets --all-features
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: rust-cargo-clippy
         name: "rust: cargo clippy"
         entry: cargo clippy --all-targets --all-features -- -D warnings
