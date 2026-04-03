@@ -370,6 +370,98 @@ impl BPE {
         self.max_pair_count = self.max_pair_count.max(new_count);
     }
 
+    fn best_pair(&self) -> Option<Pair> {
+        self.count_to_pairs
+            .get(self.max_pair_count as usize)
+            .and_then(|bucket| bucket.iter().min())
+            .copied()
+    }
+
+    fn register_merged_token(&mut self, merged_id: TokenId, pair: Pair) {
+        let left_bytes = &self.vocab[&pair.0];
+        let right_bytes = &self.vocab[&pair.1];
+        let mut new_bytes = Vec::with_capacity(left_bytes.len() + right_bytes.len());
+        new_bytes.extend_from_slice(left_bytes);
+        new_bytes.extend_from_slice(right_bytes);
+        self.vocab.insert(merged_id, new_bytes);
+        self.merge_map.insert(pair, merged_id);
+    }
+
+    fn take_pair_locations(&mut self, pair: Pair) -> Vec<(ChainIndex, NodePos)> {
+        let removed_pair_info = self.pair_info.remove(&pair);
+        let pair_locations = removed_pair_info
+            .as_ref()
+            .map(|info| info.locations.iter().copied().collect())
+            .unwrap_or_default();
+
+        if let Some(pair_info) = removed_pair_info {
+            debug_assert_eq!(pair_info.count, self.max_pair_count);
+            self.count_to_pairs[self.max_pair_count as usize].remove(&pair);
+            while self.max_pair_count > 0
+                && self.count_to_pairs[self.max_pair_count as usize].is_empty()
+            {
+                self.max_pair_count -= 1;
+            }
+        }
+
+        pair_locations
+    }
+
+    fn apply_pair_merge_at(
+        &mut self,
+        chains: &mut [WeightedChain],
+        pair: Pair,
+        merged_id: TokenId,
+        chain_index: ChainIndex,
+        left_pos: NodePos,
+    ) {
+        let frequency = i64::from(chains[chain_index].frequency);
+        let Some(left_node) = chains[chain_index].chain.nodes[left_pos as usize] else {
+            return;
+        };
+        let Some(right_pos) = left_node.next else {
+            return;
+        };
+        let Some(right_node) = chains[chain_index].chain.nodes[right_pos as usize] else {
+            return;
+        };
+        if (left_node.token_id, right_node.token_id) != pair {
+            return;
+        }
+
+        let prev = left_node.prev;
+        let next = right_node.next;
+        let prev_id = prev.map(|pos| {
+            chains[chain_index].chain.nodes[pos as usize]
+                .expect("previous node must exist")
+                .token_id
+        });
+        let next_id = next.map(|pos| {
+            chains[chain_index].chain.nodes[pos as usize]
+                .expect("next node must exist")
+                .token_id
+        });
+
+        let new_pos = chains[chain_index]
+            .chain
+            .splice(left_pos, right_pos, merged_id);
+
+        if let (Some(prev_id), Some(prev_pos)) = (prev_id, prev) {
+            let left_neighbor = (prev_id, pair.0);
+            if left_neighbor != pair {
+                self.adjust(left_neighbor, chain_index, prev_pos, -frequency);
+            }
+            self.adjust((prev_id, merged_id), chain_index, prev_pos, frequency);
+        }
+        if let Some(next_id) = next_id {
+            let right_neighbor = (pair.1, next_id);
+            if right_neighbor != pair {
+                self.adjust(right_neighbor, chain_index, right_pos, -frequency);
+            }
+            self.adjust((merged_id, next_id), chain_index, new_pos, frequency);
+        }
+    }
+
     /// Learns merge rules until `vocab_size` is reached or no mergeable pair remains.
     ///
     /// Detailed training loop:
@@ -440,93 +532,14 @@ impl BPE {
         for merged_id in
             (BASE_VOCAB_SIZE..vocab_size).filter(|token_id| !reserved_ids.contains(token_id))
         {
-            let Some(best_pair) = self
-                .count_to_pairs
-                .get(self.max_pair_count as usize)
-                .and_then(|bucket| bucket.iter().min())
-                .copied()
-            else {
+            let Some(best_pair) = self.best_pair() else {
                 break;
             };
-
-            // Materialize the merged token bytes so decoding remains a simple table lookup.
-            let left_bytes = &self.vocab[&best_pair.0];
-            let right_bytes = &self.vocab[&best_pair.1];
-            let mut new_bytes = Vec::with_capacity(left_bytes.len() + right_bytes.len());
-            new_bytes.extend_from_slice(left_bytes);
-            new_bytes.extend_from_slice(right_bytes);
-            self.vocab.insert(merged_id, new_bytes);
-            self.merge_map.insert(best_pair, merged_id);
-
-            let removed_best_pair_info = self.pair_info.remove(&best_pair);
-            let best_pair_locations: Vec<_> = removed_best_pair_info
-                .as_ref()
-                .map(|info| info.locations.iter().copied().collect())
-                .unwrap_or_default();
-
-            if let Some(best_pair_info) = removed_best_pair_info {
-                debug_assert_eq!(best_pair_info.count, self.max_pair_count);
-                self.count_to_pairs[self.max_pair_count as usize].remove(&best_pair);
-                while self.max_pair_count > 0
-                    && self.count_to_pairs[self.max_pair_count as usize].is_empty()
-                {
-                    self.max_pair_count -= 1;
-                }
-            }
+            self.register_merged_token(merged_id, best_pair);
+            let best_pair_locations = self.take_pair_locations(best_pair);
 
             for (chain_index, left_pos) in best_pair_locations {
-                let frequency = i64::from(chains[chain_index].frequency);
-                let Some(left_node) = chains[chain_index].chain.nodes[left_pos as usize] else {
-                    continue;
-                };
-                let Some(right_pos) = left_node.next else {
-                    continue;
-                };
-                let Some(right_node) = chains[chain_index].chain.nodes[right_pos as usize] else {
-                    continue;
-                };
-                if (left_node.token_id, right_node.token_id) != best_pair {
-                    continue;
-                }
-
-                // Snapshot the neighborhood before splicing:
-                //
-                //   prev -> [left] [right] -> next
-                //            \____merge____/
-                //
-                // After splicing we must remove the old adjacent pairs and add the new ones that
-                // touch the merged token.
-                let prev = left_node.prev;
-                let next = right_node.next;
-                let prev_id = prev.map(|pos| {
-                    chains[chain_index].chain.nodes[pos as usize]
-                        .expect("previous node must exist")
-                        .token_id
-                });
-                let next_id = next.map(|pos| {
-                    chains[chain_index].chain.nodes[pos as usize]
-                        .expect("next node must exist")
-                        .token_id
-                });
-
-                let new_pos = chains[chain_index]
-                    .chain
-                    .splice(left_pos, right_pos, merged_id);
-
-                if let (Some(prev_id), Some(prev_pos)) = (prev_id, prev) {
-                    let left_neighbor = (prev_id, best_pair.0);
-                    if left_neighbor != best_pair {
-                        self.adjust(left_neighbor, chain_index, prev_pos, -frequency);
-                    }
-                    self.adjust((prev_id, merged_id), chain_index, prev_pos, frequency);
-                }
-                if let Some(next_id) = next_id {
-                    let right_neighbor = (best_pair.1, next_id);
-                    if right_neighbor != best_pair {
-                        self.adjust(right_neighbor, chain_index, right_pos, -frequency);
-                    }
-                    self.adjust((merged_id, next_id), chain_index, new_pos, frequency);
-                }
+                self.apply_pair_merge_at(&mut chains, best_pair, merged_id, chain_index, left_pos);
             }
         }
 
