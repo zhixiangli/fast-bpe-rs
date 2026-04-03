@@ -122,14 +122,11 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Install development dependencies
-        run: uv sync --extra dev
-
       - name: Build source and wheel distributions
-        run: uv run maturin build --release --strip --sdist --out dist
+        run: uvx --from maturin maturin build --release --strip --sdist --out dist
 
       - name: Validate distribution metadata
-        run: uv run twine check dist/*
+        run: uvx --from twine twine check dist/*
 
       - name: Smoke test wheel installation
         run: |
