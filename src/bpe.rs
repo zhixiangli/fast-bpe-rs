@@ -18,7 +18,7 @@ struct WeightedChain {
 }
 
 #[derive(Debug, Default)]
-struct PairInfo {
+struct TokenIdPairInfo {
     count: u32,
     locations: PairLocations,
 }
@@ -31,7 +31,7 @@ enum Segment<'a> {
 /// Byte Pair Encoding model with optional special-token support.
 ///
 /// The core design treats each tokenized chunk as a mutable linked structure (`Chain`) and tracks
-/// adjacent-pair statistics in a frequency-indexed table. This avoids repeated full rescans of the
+/// adjacent token-id-pair statistics in a frequency-indexed table. This avoids repeated full rescans of the
 /// corpus during training: after each merge, only neighborhoods around changed nodes are updated.
 ///
 /// Training data flow (coarse):
@@ -46,14 +46,14 @@ enum Segment<'a> {
 /// build_training_chains (deduplicate chunks -> weighted chains)
 ///   |
 ///   v
-/// build_initial_pair_stats (pair -> {count, locations})
+/// build_initial_token_id_pair_stats (token-id pair -> {count, locations})
 ///   |
 ///   v
 /// repeat until vocab full:
-///   pick highest-frequency pair
+///   pick highest-frequency token-id pair
 ///   materialize merged token bytes
 ///   splice every recorded occurrence in-place
-///   adjust only affected neighboring pairs
+///   adjust only affected neighboring token-id pairs
 /// ```
 #[derive(Debug)]
 pub struct BPE {
@@ -66,25 +66,25 @@ pub struct BPE {
     /// Vocabulary entries materialized as raw bytes for decode/inspection.
     pub(crate) vocab: HashMap<TokenId, Vec<u8>>, // id -> bytes
     /// Learned merge rules keyed by `(left, right)` token pairs.
-    pub(crate) merge_map: HashMap<TokenIdPair, TokenId>, // pair -> merged id
+    pub(crate) merge_map: HashMap<TokenIdPair, TokenId>, // token-id pair -> merged id
 
     // Training-time index structures.
     //
     // `chains` stores each unique training chunk once with its corpus multiplicity.
-    // `pair_info` + `count_to_pairs` form a bidirectional index:
+    // `token_id_pair_info` + `count_to_token_id_pairs` form a bidirectional index:
     //
-    //   pair -------------------------------> metadata
-    //   (A,B)       pair_info[(A,B)] = {count, locations}
+    //   token-id pair ----------------------> metadata
+    //   (A,B)       token_id_pair_info[(A,B)] = {count, locations}
     //
-    //   count -----------------------------> set of pairs at that count
-    //   17          count_to_pairs[17] = {(A,B), (C,D), ...}
+    //   count -----------------------------> set of token-id pairs at that count
+    //   17          count_to_token_id_pairs[17] = {(A,B), (C,D), ...}
     //
-    // `max_pair_count` points to the highest non-empty count bucket, so selecting the current
+    // `max_token_id_pair_count` points to the highest non-empty count bucket, so selecting the current
     // best merge is an O(1)-expected bucket lookup plus tie-break in that bucket.
     chains: Vec<WeightedChain>,
-    count_to_pairs: Vec<FxHashSet<TokenIdPair>>, // frequency -> pairs
-    max_pair_count: u32,                         // largest non-empty frequency bucket
-    pair_info: FxHashMap<TokenIdPair, PairInfo>, // pair -> {frequency, (chain_idx, node_pos)}
+    count_to_token_id_pairs: Vec<FxHashSet<TokenIdPair>>, // frequency -> token-id pairs
+    max_token_id_pair_count: u32,                         // largest non-empty frequency bucket
+    token_id_pair_info: FxHashMap<TokenIdPair, TokenIdPairInfo>, // token-id pair -> {frequency, (chain_idx, node_pos)}
 }
 
 impl BPE {
@@ -173,11 +173,11 @@ impl BPE {
             .collect()
     }
 
-    /// Counts every adjacent pair in parallel and records all locations where each pair appears.
+    /// Counts every adjacent token-id pair in parallel and records all locations where each pair appears.
     ///
-    /// The resulting map is used to seed `pair_info` and `count_to_pairs` in one
-    /// pass with one bucket insertion per unique pair.
-    fn build_initial_pair_stats(
+    /// The resulting map is used to seed `token_id_pair_info` and `count_to_token_id_pairs` in one
+    /// pass with one bucket insertion per unique token-id pair.
+    fn build_initial_token_id_pair_stats(
         chains: &[WeightedChain],
     ) -> SeedMap<(u32, Vec<(ChainIndex, NodePos)>)> {
         chains
@@ -185,40 +185,40 @@ impl BPE {
             .enumerate()
             .fold(
                 SeedMap::<(u32, Vec<(ChainIndex, NodePos)>)>::default,
-                |mut local_pairs, (chain_index, weighted_chain)| {
-                    let pair_capacity = weighted_chain.chain.nodes.len().saturating_sub(1);
-                    if pair_capacity > 0 {
-                        local_pairs.reserve(pair_capacity);
+                |mut local_token_id_pairs, (chain_index, weighted_chain)| {
+                    let token_id_pair_capacity = weighted_chain.chain.nodes.len().saturating_sub(1);
+                    if token_id_pair_capacity > 0 {
+                        local_token_id_pairs.reserve(token_id_pair_capacity);
                     }
 
                     let frequency = weighted_chain.frequency;
                     let mut previous = None;
                     for (pos, node) in weighted_chain.chain.iter() {
                         if let Some((left_pos, left_id)) = previous {
-                            let pair = (left_id, node.token_id);
-                            let (count, locations) = local_pairs
-                                .entry(pair)
+                            let token_id_pair = (left_id, node.token_id);
+                            let (count, locations) = local_token_id_pairs
+                                .entry(token_id_pair)
                                 .or_insert_with(|| (0, Vec::with_capacity(1)));
                             *count += frequency;
                             locations.push((chain_index, left_pos));
                         }
                         previous = Some((pos, node.token_id));
                     }
-                    local_pairs
+                    local_token_id_pairs
                 },
             )
             .reduce(
                 SeedMap::<(u32, Vec<(ChainIndex, NodePos)>)>::default,
-                |mut global_pairs, local_pairs| {
-                    global_pairs.reserve(local_pairs.len());
-                    for (pair, (count, mut locations)) in local_pairs {
-                        let (global_count, global_locations) = global_pairs
-                            .entry(pair)
+                |mut global_token_id_pairs, local_token_id_pairs| {
+                    global_token_id_pairs.reserve(local_token_id_pairs.len());
+                    for (token_id_pair, (count, mut locations)) in local_token_id_pairs {
+                        let (global_count, global_locations) = global_token_id_pairs
+                            .entry(token_id_pair)
                             .or_insert_with(|| (0, Vec::with_capacity(locations.len())));
                         *global_count += count;
                         global_locations.append(&mut locations);
                     }
-                    global_pairs
+                    global_token_id_pairs
                 },
             )
     }
@@ -271,9 +271,9 @@ impl BPE {
             vocab,
             merge_map: HashMap::new(),
             chains: Vec::new(),
-            count_to_pairs: vec![FxHashSet::default()],
-            max_pair_count: 0,
-            pair_info: FxHashMap::default(),
+            count_to_token_id_pairs: vec![FxHashSet::default()],
+            max_token_id_pair_count: 0,
+            token_id_pair_info: FxHashMap::default(),
         })
     }
 
@@ -298,7 +298,7 @@ impl BPE {
         )
     }
 
-    /// Updates pair frequency and location indexes after one local topology change.
+    /// Updates token-id-pair frequency and location indexes after one local topology change.
     ///
     /// `delta` is weighted by the source chunk frequency, so one splice in a chain that
     /// represents N duplicate corpus chunks contributes N increments/decrements.
@@ -306,113 +306,127 @@ impl BPE {
     /// Index-mutation flow:
     ///
     /// ```text
-    /// input: (pair, location, delta)
+    /// input: (token_id_pair, location, delta)
     ///   |
     ///   v
-    /// mutate pair_info[pair]:
+    /// mutate token_id_pair_info[token_id_pair]:
     ///   count += delta
     ///   locations +/- (chain_index, pos)
     ///   |
-    ///   +--> old_count bucket: remove pair
+    ///   +--> old_count bucket: remove token_id_pair
     ///   |
     ///   +--> if new_count == 0:
-    ///   |      delete pair_info entry
-    ///   |      shrink max_pair_count downward if needed
+    ///   |      delete token_id_pair_info entry
+    ///   |      shrink max_token_id_pair_count downward if needed
     ///   |
     ///   +--> else:
-    ///          insert pair into count_to_pairs[new_count]
-    ///          raise max_pair_count if new bucket is higher
+    ///          insert token_id_pair into count_to_token_id_pairs[new_count]
+    ///          raise max_token_id_pair_count if new bucket is higher
     /// ```
     ///
     /// Keeping both directions synchronized prevents stale bucket membership and ensures the
-    /// "next best pair" query remains unambiguous after overlapping merges.
-    fn adjust(&mut self, pair: TokenIdPair, chain_index: ChainIndex, pos: NodePos, delta: i64) {
+    /// "next best token-id pair" query remains unambiguous after overlapping merges.
+    fn adjust(
+        &mut self,
+        token_id_pair: TokenIdPair,
+        chain_index: ChainIndex,
+        pos: NodePos,
+        delta: i64,
+    ) {
         let (old_count, new_count) = {
-            let pair_info = self.pair_info.entry(pair).or_default();
-            let old_count = pair_info.count;
+            let token_id_pair_info = self.token_id_pair_info.entry(token_id_pair).or_default();
+            let old_count = token_id_pair_info.count;
             let new_count_i64 = i64::from(old_count) + delta;
-            debug_assert!(new_count_i64 >= 0, "pair counts must stay non-negative");
-            let new_count =
-                u32::try_from(new_count_i64).expect("pair counts must fit in u32 after adjustment");
+            debug_assert!(
+                new_count_i64 >= 0,
+                "token-id pair counts must stay non-negative"
+            );
+            let new_count = u32::try_from(new_count_i64)
+                .expect("token-id pair counts must fit in u32 after adjustment");
 
-            pair_info.count = new_count;
+            token_id_pair_info.count = new_count;
             if delta > 0 {
-                pair_info.locations.insert((chain_index, pos));
+                token_id_pair_info.locations.insert((chain_index, pos));
             } else {
-                pair_info.locations.remove(&(chain_index, pos));
+                token_id_pair_info.locations.remove(&(chain_index, pos));
             }
             (old_count, new_count)
         };
 
         if old_count > 0 {
             let bucket = self
-                .count_to_pairs
+                .count_to_token_id_pairs
                 .get_mut(old_count as usize)
-                .expect("existing pair count bucket must exist");
-            bucket.remove(&pair);
-            if self.max_pair_count == old_count && bucket.is_empty() {
-                while self.max_pair_count > 0
-                    && self.count_to_pairs[self.max_pair_count as usize].is_empty()
+                .expect("existing token-id pair count bucket must exist");
+            bucket.remove(&token_id_pair);
+            if self.max_token_id_pair_count == old_count && bucket.is_empty() {
+                while self.max_token_id_pair_count > 0
+                    && self.count_to_token_id_pairs[self.max_token_id_pair_count as usize]
+                        .is_empty()
                 {
-                    self.max_pair_count -= 1;
+                    self.max_token_id_pair_count -= 1;
                 }
             }
         }
 
         if new_count == 0 {
-            self.pair_info.remove(&pair);
+            self.token_id_pair_info.remove(&token_id_pair);
             return;
         }
 
-        if self.count_to_pairs.len() <= new_count as usize {
-            self.count_to_pairs
+        if self.count_to_token_id_pairs.len() <= new_count as usize {
+            self.count_to_token_id_pairs
                 .resize_with(new_count as usize + 1, FxHashSet::default);
         }
-        self.count_to_pairs[new_count as usize].insert(pair);
-        self.max_pair_count = self.max_pair_count.max(new_count);
+        self.count_to_token_id_pairs[new_count as usize].insert(token_id_pair);
+        self.max_token_id_pair_count = self.max_token_id_pair_count.max(new_count);
     }
 
-    fn best_pair(&self) -> Option<TokenIdPair> {
-        self.count_to_pairs
-            .get(self.max_pair_count as usize)
+    fn best_token_id_pair(&self) -> Option<TokenIdPair> {
+        self.count_to_token_id_pairs
+            .get(self.max_token_id_pair_count as usize)
             .and_then(|bucket| bucket.iter().min())
             .copied()
     }
 
-    fn register_merged_token(&mut self, merged_id: TokenId, pair: TokenIdPair) {
-        let left_bytes = &self.vocab[&pair.0];
-        let right_bytes = &self.vocab[&pair.1];
+    fn register_merged_token(&mut self, merged_id: TokenId, token_id_pair: TokenIdPair) {
+        let left_bytes = &self.vocab[&token_id_pair.0];
+        let right_bytes = &self.vocab[&token_id_pair.1];
         let mut new_bytes = Vec::with_capacity(left_bytes.len() + right_bytes.len());
         new_bytes.extend_from_slice(left_bytes);
         new_bytes.extend_from_slice(right_bytes);
         self.vocab.insert(merged_id, new_bytes);
-        self.merge_map.insert(pair, merged_id);
+        self.merge_map.insert(token_id_pair, merged_id);
     }
 
-    fn take_pair_locations(&mut self, pair: TokenIdPair) -> Vec<(ChainIndex, NodePos)> {
-        let removed_pair_info = self.pair_info.remove(&pair);
-        let pair_locations = removed_pair_info
+    fn take_token_id_pair_locations(
+        &mut self,
+        token_id_pair: TokenIdPair,
+    ) -> Vec<(ChainIndex, NodePos)> {
+        let removed_token_id_pair_info = self.token_id_pair_info.remove(&token_id_pair);
+        let token_id_pair_locations = removed_token_id_pair_info
             .as_ref()
             .map(|info| info.locations.iter().copied().collect())
             .unwrap_or_default();
 
-        if let Some(pair_info) = removed_pair_info {
-            debug_assert_eq!(pair_info.count, self.max_pair_count);
-            self.count_to_pairs[self.max_pair_count as usize].remove(&pair);
-            while self.max_pair_count > 0
-                && self.count_to_pairs[self.max_pair_count as usize].is_empty()
+        if let Some(token_id_pair_info) = removed_token_id_pair_info {
+            debug_assert_eq!(token_id_pair_info.count, self.max_token_id_pair_count);
+            self.count_to_token_id_pairs[self.max_token_id_pair_count as usize]
+                .remove(&token_id_pair);
+            while self.max_token_id_pair_count > 0
+                && self.count_to_token_id_pairs[self.max_token_id_pair_count as usize].is_empty()
             {
-                self.max_pair_count -= 1;
+                self.max_token_id_pair_count -= 1;
             }
         }
 
-        pair_locations
+        token_id_pair_locations
     }
 
-    fn apply_pair_merge_at(
+    fn apply_token_id_pair_merge_at(
         &mut self,
         chains: &mut [WeightedChain],
-        pair: TokenIdPair,
+        token_id_pair: TokenIdPair,
         merged_id: TokenId,
         chain_index: ChainIndex,
         left_pos: NodePos,
@@ -427,7 +441,7 @@ impl BPE {
         let Some(right_node) = chains[chain_index].chain.nodes[right_pos as usize] else {
             return;
         };
-        if (left_node.token_id, right_node.token_id) != pair {
+        if (left_node.token_id, right_node.token_id) != token_id_pair {
             return;
         }
 
@@ -449,22 +463,22 @@ impl BPE {
             .splice(left_pos, right_pos, merged_id);
 
         if let (Some(prev_id), Some(prev_pos)) = (prev_id, prev) {
-            let left_neighbor = (prev_id, pair.0);
-            if left_neighbor != pair {
+            let left_neighbor = (prev_id, token_id_pair.0);
+            if left_neighbor != token_id_pair {
                 self.adjust(left_neighbor, chain_index, prev_pos, -frequency);
             }
             self.adjust((prev_id, merged_id), chain_index, prev_pos, frequency);
         }
         if let Some(next_id) = next_id {
-            let right_neighbor = (pair.1, next_id);
-            if right_neighbor != pair {
+            let right_neighbor = (token_id_pair.1, next_id);
+            if right_neighbor != token_id_pair {
                 self.adjust(right_neighbor, chain_index, right_pos, -frequency);
             }
             self.adjust((merged_id, next_id), chain_index, new_pos, frequency);
         }
     }
 
-    /// Learns merge rules until `vocab_size` is reached or no mergeable pair remains.
+    /// Learns merge rules until `vocab_size` is reached or no mergeable token-id pair remains.
     ///
     /// Detailed training loop:
     ///
@@ -476,20 +490,20 @@ impl BPE {
     ///      (deduplicate identical chunks -> frequency weight)
     ///      |
     ///      v
-    /// [3] build initial pair stats
-    ///      pair_info[(L,R)] = {weighted_count, all left-node locations}
-    ///      count_to_pairs[count] += (L,R)
+    /// [3] build initial token-id-pair stats
+    ///      token_id_pair_info[(L,R)] = {weighted_count, all left-node locations}
+    ///      count_to_token_id_pairs[count] += (L,R)
     ///      |
     ///      v
     /// [4] for merged_id in vocabulary-growth order:
     ///      |
-    ///      +--> select best_pair from count_to_pairs[max_pair_count]
-    ///      |      (deterministic tie break by lexical pair order)
+    ///      +--> select best_token_id_pair from count_to_token_id_pairs[max_token_id_pair_count]
+    ///      |      (deterministic tie break by lexical token-id-pair order)
     ///      |
     ///      +--> vocab[merged_id] = vocab[left] ++ vocab[right]
     ///      |    merge_map[(left,right)] = merged_id
     ///      |
-    ///      +--> for each recorded occurrence of best_pair:
+    ///      +--> for each recorded occurrence of best_token_id_pair:
     ///             verify nodes still match (skip stale locations)
     ///             splice(left,right -> merged_id)
     ///             adjust frequencies for old neighbors removed
@@ -505,28 +519,31 @@ impl BPE {
         // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
         let mut chains = std::mem::take(&mut self.chains);
 
-        // Seed all pair indexes from a parallel count/location aggregation.
-        let initial_pair_stats = Self::build_initial_pair_stats(&chains);
-        if !initial_pair_stats.is_empty() {
-            self.pair_info.reserve(initial_pair_stats.len());
+        // Seed all token-id pair indexes from a parallel count/location aggregation.
+        let initial_token_id_pair_stats = Self::build_initial_token_id_pair_stats(&chains);
+        if !initial_token_id_pair_stats.is_empty() {
+            self.token_id_pair_info
+                .reserve(initial_token_id_pair_stats.len());
 
-            self.max_pair_count = initial_pair_stats
+            self.max_token_id_pair_count = initial_token_id_pair_stats
                 .values()
                 .map(|(count, _)| *count)
                 .max()
                 .unwrap_or_default();
-            self.count_to_pairs
-                .resize_with(self.max_pair_count as usize + 1, FxHashSet::default);
+            self.count_to_token_id_pairs.resize_with(
+                self.max_token_id_pair_count as usize + 1,
+                FxHashSet::default,
+            );
 
-            for (pair, (count, locations)) in initial_pair_stats {
-                self.pair_info.insert(
-                    pair,
-                    PairInfo {
+            for (token_id_pair, (count, locations)) in initial_token_id_pair_stats {
+                self.token_id_pair_info.insert(
+                    token_id_pair,
+                    TokenIdPairInfo {
                         count,
                         locations: locations.into_iter().collect(),
                     },
                 );
-                self.count_to_pairs[count as usize].insert(pair);
+                self.count_to_token_id_pairs[count as usize].insert(token_id_pair);
             }
         }
 
@@ -534,14 +551,21 @@ impl BPE {
         for merged_id in
             (BASE_VOCAB_SIZE..vocab_size).filter(|token_id| !reserved_ids.contains(token_id))
         {
-            let Some(best_pair) = self.best_pair() else {
+            let Some(best_token_id_pair) = self.best_token_id_pair() else {
                 break;
             };
-            self.register_merged_token(merged_id, best_pair);
-            let best_pair_locations = self.take_pair_locations(best_pair);
+            self.register_merged_token(merged_id, best_token_id_pair);
+            let best_token_id_pair_locations =
+                self.take_token_id_pair_locations(best_token_id_pair);
 
-            for (chain_index, left_pos) in best_pair_locations {
-                self.apply_pair_merge_at(&mut chains, best_pair, merged_id, chain_index, left_pos);
+            for (chain_index, left_pos) in best_token_id_pair_locations {
+                self.apply_token_id_pair_merge_at(
+                    &mut chains,
+                    best_token_id_pair,
+                    merged_id,
+                    chain_index,
+                    left_pos,
+                );
             }
         }
 
@@ -559,14 +583,14 @@ impl BPE {
     /// chain nodes
     ///   |
     ///   v
-    /// scan adjacent pairs -> candidate merges from merge_map
+    /// scan adjacent token-id pairs -> candidate merges from merge_map
     ///   |
     ///   v
     /// choose candidate with smallest merge_id
     ///   |
     ///   +--> none: emit chain token_ids
     ///   |
-    ///   +--> some: splice pair and rescan chain
+    ///   +--> some: splice token-id pair and rescan chain
     /// ```
     pub fn encode(&self, doc: impl AsRef<str>) -> Vec<TokenId> {
         let mut chains = self.split(doc);
@@ -579,8 +603,8 @@ impl BPE {
 
                 for (pos, node) in chain.iter() {
                     if let Some((prev_pos, prev_id)) = previous {
-                        let pair = (prev_id, node.token_id);
-                        if let Some(&merge_id) = self.merge_map.get(&pair)
+                        let token_id_pair = (prev_id, node.token_id);
+                        if let Some(&merge_id) = self.merge_map.get(&token_id_pair)
                             && best.is_none_or(|(best_id, _, _)| merge_id < best_id)
                         {
                             best = Some((merge_id, prev_pos, pos));
@@ -648,10 +672,10 @@ impl BPE {
         });
         self.merge_map.clear();
         self.chains.clear();
-        self.count_to_pairs.clear();
-        self.count_to_pairs.push(FxHashSet::default());
-        self.max_pair_count = 0;
-        self.pair_info.clear();
+        self.count_to_token_id_pairs.clear();
+        self.count_to_token_id_pairs.push(FxHashSet::default());
+        self.max_token_id_pair_count = 0;
+        self.token_id_pair_info.clear();
     }
 }
 
@@ -690,7 +714,10 @@ mod tests {
         assert_eq!(bpe.chains[0].frequency, 3);
         assert_eq!(bpe.vocab.get(&256), Some(&b"he".to_vec()));
         assert_eq!(bpe.vocab.get(&257), Some(&b"the".to_vec()));
-        assert!(!bpe.pair_info.contains_key(&(b't' as u32, b'h' as u32)));
+        assert!(
+            !bpe.token_id_pair_info
+                .contains_key(&(b't' as u32, b'h' as u32))
+        );
         assert_eq!(bpe.encode("the the"), vec![257, 257]);
     }
 
@@ -752,9 +779,9 @@ mod tests {
         assert_eq!(bpe.decode(vec![999_999]), Vec::<u8>::new());
         assert!(bpe.merge_map.is_empty());
         assert!(bpe.chains.is_empty());
-        assert_eq!(bpe.count_to_pairs.len(), 1);
-        assert!(bpe.count_to_pairs[0].is_empty());
-        assert!(bpe.pair_info.is_empty());
+        assert_eq!(bpe.count_to_token_id_pairs.len(), 1);
+        assert!(bpe.count_to_token_id_pairs[0].is_empty());
+        assert!(bpe.token_id_pair_info.is_empty());
     }
 
     #[test]
@@ -873,11 +900,12 @@ mod tests {
             .expect("valid config should construct");
         bpe.train(305, ["a<pad>a<pad>", "<pad><eos><pad>"]);
 
-        assert!(
-            !bpe.merge_map
-                .keys()
-                .any(|pair| pair.0 == 300 || pair.1 == 300 || pair.0 == 301 || pair.1 == 301)
-        );
+        assert!(!bpe.merge_map.keys().any(|token_id_pair| {
+            token_id_pair.0 == 300
+                || token_id_pair.1 == 300
+                || token_id_pair.0 == 301
+                || token_id_pair.1 == 301
+        }));
         assert_eq!(
             bpe.encode("a<pad><eos>a"),
             vec![b'a' as u32, 300, 301, b'a' as u32]
