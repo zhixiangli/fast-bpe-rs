@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.3.1...v0.3.2) (2026-04-04)
+
+
+### Performance Improvements
+
+* introduce `TrainingChunk` alias and widen SmallVec capacity for training data ([#108](https://github.com/zhixiangli/fast-bpe-rs/issues/108)) ([012343b](https://github.com/zhixiangli/fast-bpe-rs/commit/012343b1089383eef02bede96e135f9694433914))
+
 ## [0.3.1](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.3.0...v0.3.1) (2026-04-04)
 
 
