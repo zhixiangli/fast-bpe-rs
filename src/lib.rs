@@ -1,9 +1,9 @@
 //! Crate entry point for the Rust library and Python extension module.
 
 mod bpe;
-mod chain;
 mod error;
 mod python;
+mod token_sequence;
 mod types;
 
 pub use crate::bpe::BPE;
