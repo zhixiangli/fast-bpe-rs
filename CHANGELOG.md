@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.3.3...v0.3.4) (2026-04-04)
+
+
+### Performance Improvements
+
+* use hashmap buckets for token-pair frequency index ([#115](https://github.com/zhixiangli/fast-bpe-rs/issues/115)) ([85cdd5d](https://github.com/zhixiangli/fast-bpe-rs/commit/85cdd5dced887117fb4666149e3e7c3d5c360722))
+
 ## [0.3.3](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.3.2...v0.3.3) (2026-04-04)
 
 
