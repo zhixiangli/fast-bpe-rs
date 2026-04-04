@@ -29,6 +29,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
+  "datasets>=2.0",
   "maturin>=1.12,<2.0",
   "pre-commit>=4.2",
   "pytest>=9.0",
