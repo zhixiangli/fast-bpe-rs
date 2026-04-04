@@ -2,8 +2,8 @@
 
 mod bpe;
 mod error;
+mod merge_sequence;
 mod python;
-mod token_sequence;
 mod types;
 
 pub use crate::bpe::BPE;

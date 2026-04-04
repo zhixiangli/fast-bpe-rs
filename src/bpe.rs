@@ -1,8 +1,8 @@
 use crate::error::BPEError;
-use crate::token_sequence::TokenSequence;
+use crate::merge_sequence::MergeSequence;
 use crate::types::{
-    BASE_VOCAB_SIZE, NodePos, PairLocations, SeedMap, TokenId, TokenIdPair, TokenSequenceIndex,
-    TrainingChunk,
+    BASE_VOCAB_SIZE, MergeNodeSlot, MergeSequenceIndex, PairLocations, SeedMap, TokenId,
+    TokenIdPair, TrainingChunk,
 };
 use ahash::RandomState as AHashRandomState;
 use fancy_regex::{Regex, escape};
@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
 #[derive(Debug)]
-struct WeightedTokenSequence {
-    chain: TokenSequence,
+struct WeightedMergeSequence {
+    chain: MergeSequence,
     frequency: u32,
 }
 
@@ -31,7 +31,7 @@ enum Segment<'a> {
 
 /// Byte Pair Encoding model with optional special-token support.
 ///
-/// The core design treats each tokenized chunk as a mutable linked structure (`TokenSequence`) and tracks
+/// The core design treats each tokenized chunk as a mutable linked structure (`MergeSequence`) and tracks
 /// adjacent token-id-pair statistics in a frequency-indexed table. This avoids repeated full rescans of the
 /// corpus during training: after each merge, only neighborhoods around changed nodes are updated.
 ///
@@ -83,7 +83,7 @@ pub struct BPE {
     //
     // `max_token_id_pair_count` points to the highest non-empty count bucket, so selecting the current
     // best merge is an O(1)-expected bucket lookup plus tie-break in that bucket.
-    chains: Vec<WeightedTokenSequence>,
+    chains: Vec<WeightedMergeSequence>,
     count_to_token_id_pairs: FxHashMap<u32, FxHashSet<TokenIdPair>>, // frequency -> token-id pairs
     max_token_id_pair_count: u32, // largest non-empty frequency bucket
     token_id_pair_info: FxHashMap<TokenIdPair, TokenIdPairInfo>, // token-id pair -> {frequency, (chain_idx, node_pos)}
@@ -137,7 +137,7 @@ impl BPE {
     fn build_training_chains(
         &self,
         docs: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Vec<WeightedTokenSequence> {
+    ) -> Vec<WeightedMergeSequence> {
         #[inline]
         fn count_chunk(
             counts: &mut HbHashMap<TrainingChunk, u32, AHashRandomState>,
@@ -221,8 +221,8 @@ impl BPE {
             )
             .0
             .into_iter()
-            .map(|(chunk, frequency)| WeightedTokenSequence {
-                chain: TokenSequence::new(&chunk),
+            .map(|(chunk, frequency)| WeightedMergeSequence {
+                chain: MergeSequence::new(&chunk),
                 frequency,
             })
             .collect()
@@ -233,13 +233,13 @@ impl BPE {
     /// The resulting map is used to seed `token_id_pair_info` and `count_to_token_id_pairs` in one
     /// pass with one bucket insertion per unique token-id pair.
     fn build_initial_token_id_pair_stats(
-        chains: &[WeightedTokenSequence],
-    ) -> SeedMap<(u32, Vec<(TokenSequenceIndex, NodePos)>)> {
+        chains: &[WeightedMergeSequence],
+    ) -> SeedMap<(u32, Vec<(MergeSequenceIndex, MergeNodeSlot)>)> {
         chains
             .par_iter()
             .enumerate()
             .fold(
-                SeedMap::<(u32, Vec<(TokenSequenceIndex, NodePos)>)>::default,
+                SeedMap::<(u32, Vec<(MergeSequenceIndex, MergeNodeSlot)>)>::default,
                 |mut local_token_id_pairs, (chain_index, weighted_chain)| {
                     let token_id_pair_capacity = weighted_chain.chain.nodes.len().saturating_sub(1);
                     if token_id_pair_capacity > 0 {
@@ -263,7 +263,7 @@ impl BPE {
                 },
             )
             .reduce(
-                SeedMap::<(u32, Vec<(TokenSequenceIndex, NodePos)>)>::default,
+                SeedMap::<(u32, Vec<(MergeSequenceIndex, MergeNodeSlot)>)>::default,
                 |mut global_token_id_pairs, local_token_id_pairs| {
                     global_token_id_pairs.reserve(local_token_id_pairs.len());
                     for (token_id_pair, (count, mut locations)) in local_token_id_pairs {
@@ -387,8 +387,8 @@ impl BPE {
     fn adjust(
         &mut self,
         token_id_pair: TokenIdPair,
-        chain_index: TokenSequenceIndex,
-        pos: NodePos,
+        chain_index: MergeSequenceIndex,
+        pos: MergeNodeSlot,
         delta: i64,
     ) {
         let (old_count, new_count) = {
@@ -464,7 +464,7 @@ impl BPE {
     fn take_token_id_pair_locations(
         &mut self,
         token_id_pair: TokenIdPair,
-    ) -> Vec<(TokenSequenceIndex, NodePos)> {
+    ) -> Vec<(MergeSequenceIndex, MergeNodeSlot)> {
         let removed_token_id_pair_info = self.token_id_pair_info.remove(&token_id_pair);
         let token_id_pair_locations = removed_token_id_pair_info
             .as_ref()
@@ -492,11 +492,11 @@ impl BPE {
 
     fn apply_token_id_pair_merge_at(
         &mut self,
-        chains: &mut [WeightedTokenSequence],
+        chains: &mut [WeightedMergeSequence],
         token_id_pair: TokenIdPair,
         merged_id: TokenId,
-        chain_index: TokenSequenceIndex,
-        left_pos: NodePos,
+        chain_index: MergeSequenceIndex,
+        left_pos: MergeNodeSlot,
     ) {
         let frequency = i64::from(chains[chain_index].frequency);
         let Some(left_node) = chains[chain_index].chain.nodes[left_pos as usize] else {
@@ -677,8 +677,8 @@ impl BPE {
 
         for chain in &mut chains {
             loop {
-                let mut best: Option<(TokenId, NodePos, NodePos)> = None;
-                let mut previous: Option<(NodePos, TokenId)> = None;
+                let mut best: Option<(TokenId, MergeNodeSlot, MergeNodeSlot)> = None;
+                let mut previous: Option<(MergeNodeSlot, TokenId)> = None;
 
                 for (pos, node) in chain.iter() {
                     if let Some((prev_pos, prev_id)) = previous {
@@ -718,11 +718,11 @@ impl BPE {
     /// Special tokens act like pre-tokenized islands. Everything between them is split by the
     /// normal regex, but the special-token literals themselves become single-node chains so they
     /// never merge with surrounding text.
-    fn split(&self, doc: impl AsRef<str>) -> Vec<TokenSequence> {
+    fn split(&self, doc: impl AsRef<str>) -> Vec<MergeSequence> {
         self.split_impl(doc, true)
     }
 
-    fn split_impl(&self, doc: impl AsRef<str>, include_special_tokens: bool) -> Vec<TokenSequence> {
+    fn split_impl(&self, doc: impl AsRef<str>, include_special_tokens: bool) -> Vec<MergeSequence> {
         let doc = doc.as_ref();
         let mut chains = Vec::new();
         let split_pattern =
@@ -736,14 +736,14 @@ impl BPE {
                 Segment::Regular(segment) => {
                     chains.extend(
                         Self::split_matches(&split_pattern, segment)
-                            .map(|matched| TokenSequence::new(matched.as_bytes())),
+                            .map(|matched| MergeSequence::new(matched.as_bytes())),
                     );
                 }
                 Segment::Special(special) => {
                     if include_special_tokens
                         && let Some(&token_id) = self.special_tokens.get(special)
                     {
-                        chains.push(TokenSequence::from_token_id(token_id));
+                        chains.push(MergeSequence::from_token_id(token_id));
                     }
                 }
             }

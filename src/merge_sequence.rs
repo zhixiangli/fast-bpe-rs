@@ -1,23 +1,23 @@
-use crate::types::{NodePos, TokenId};
+use crate::types::{MergeNodeSlot, TokenId};
 
-/// One token inside a [`TokenSequence`].
+/// One token inside a [`MergeSequence`].
 ///
 /// The `prev`/`next` links let us remove a merged pair in `O(1)` without shifting the backing
 /// vector.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct TokenNode {
+pub(crate) struct MergeNode {
     /// Token currently stored at this position.
     pub(crate) token_id: TokenId,
     /// Index of the previous live node, if any.
-    pub(crate) prev: Option<NodePos>,
+    pub(crate) prev: Option<MergeNodeSlot>,
     /// Index of the next live node, if any.
-    pub(crate) next: Option<NodePos>,
+    pub(crate) next: Option<MergeNodeSlot>,
 }
 
 /// Sparse linked list stored inside a fixed-width `Vec`.
 ///
 /// The module is designed for BPE's "merge adjacent pair" primitive:
-/// - `Vec<Option<TokenNode>>` provides stable integer positions (`NodePos`).
+/// - `Vec<Option<MergeNode>>` provides stable integer positions (`MergeNodeSlot`).
 /// - Live traversal follows `prev/next` links from `head`.
 /// - Removing a node creates a tombstone (`None`) instead of shifting indices.
 ///
@@ -43,18 +43,18 @@ pub(crate) struct TokenNode {
 /// This layout guarantees O(1) local rewrites and avoids index invalidation in pair-location
 /// bookkeeping maintained by the trainer.
 #[derive(Debug)]
-pub(crate) struct TokenSequence {
+pub(crate) struct MergeSequence {
     /// Slots for live nodes and tombstones from earlier merges.
-    pub(crate) nodes: Vec<Option<TokenNode>>,
+    pub(crate) nodes: Vec<Option<MergeNode>>,
     /// Index of the first live node in the linked structure.
-    pub(crate) head: Option<NodePos>,
+    pub(crate) head: Option<MergeNodeSlot>,
 }
 
-impl TokenSequence {
+impl MergeSequence {
     /// Creates a chain containing exactly one pre-tokenized token.
     pub(crate) fn from_token_id(token_id: TokenId) -> Self {
         Self {
-            nodes: vec![Some(TokenNode {
+            nodes: vec![Some(MergeNode {
                 token_id,
                 prev: None,
                 next: None,
@@ -70,8 +70,9 @@ impl TokenSequence {
             .iter()
             .enumerate()
             .map(|(index, &byte)| {
-                let pos = NodePos::try_from(index).expect("chain length exceeds NodePos capacity");
-                Some(TokenNode {
+                let pos = MergeNodeSlot::try_from(index)
+                    .expect("chain length exceeds MergeNodeSlot capacity");
+                Some(MergeNode {
                     token_id: TokenId::from(byte),
                     prev: pos.checked_sub(1),
                     next: (index + 1 < len).then_some(pos + 1),
@@ -86,7 +87,7 @@ impl TokenSequence {
     }
 
     /// Iterates over live nodes in linked-list order.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (NodePos, TokenNode)> + '_ {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (MergeNodeSlot, MergeNode)> + '_ {
         let mut current = self.head;
         std::iter::from_fn(move || {
             let pos = current?;
@@ -125,10 +126,10 @@ impl TokenSequence {
     /// indexes, which prevents ambiguity about where the merged token now lives.
     pub(crate) fn splice(
         &mut self,
-        left: NodePos,
-        right: NodePos,
+        left: MergeNodeSlot,
+        right: MergeNodeSlot,
         new_token_id: TokenId,
-    ) -> NodePos {
+    ) -> MergeNodeSlot {
         let left_node = self.nodes[left as usize].expect("left splice node must exist");
         let right_node = self.nodes[right as usize].expect("right splice node must exist");
         debug_assert_eq!(
@@ -137,7 +138,7 @@ impl TokenSequence {
             "splice requires adjacent nodes"
         );
 
-        let merged = TokenNode {
+        let merged = MergeNode {
             token_id: new_token_id,
             prev: left_node.prev,
             next: right_node.next,
@@ -171,7 +172,7 @@ mod tests {
 
     #[test]
     fn new_chain_preserves_byte_order_and_links() {
-        let chain = TokenSequence::new(b"abc");
+        let chain = MergeSequence::new(b"abc");
         let nodes: Vec<_> = chain.iter().collect();
 
         assert_eq!(chain.head, Some(0));
@@ -192,7 +193,7 @@ mod tests {
 
     #[test]
     fn empty_chain_has_no_head_or_nodes() {
-        let chain = TokenSequence::new(b"");
+        let chain = MergeSequence::new(b"");
 
         assert_eq!(chain.head, None);
         assert!(chain.nodes.is_empty());
@@ -201,10 +202,10 @@ mod tests {
 
     #[test]
     fn splice_updates_links_for_middle_pair() {
-        let mut chain = TokenSequence::new(b"abcd");
+        let mut chain = MergeSequence::new(b"abcd");
 
         let merged_pos = chain.splice(1, 2, 999);
-        let nodes: Vec<(NodePos, u32)> = chain
+        let nodes: Vec<(MergeNodeSlot, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
@@ -220,10 +221,10 @@ mod tests {
 
     #[test]
     fn splice_updates_head_when_merging_first_pair() {
-        let mut chain = TokenSequence::new(b"abc");
+        let mut chain = MergeSequence::new(b"abc");
 
         let merged_pos = chain.splice(0, 1, 777);
-        let nodes: Vec<(NodePos, u32)> = chain
+        let nodes: Vec<(MergeNodeSlot, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
@@ -240,12 +241,12 @@ mod tests {
 
     #[test]
     fn repeated_splices_reuse_existing_capacity() {
-        let mut chain = TokenSequence::new(b"aaaa");
+        let mut chain = MergeSequence::new(b"aaaa");
 
         let first = chain.splice(0, 1, 256);
         let second = chain.splice(first, 2, 257);
 
-        let nodes: Vec<(NodePos, u32)> = chain
+        let nodes: Vec<(MergeNodeSlot, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
@@ -259,7 +260,7 @@ mod tests {
 
     #[test]
     fn from_token_id_creates_single_node_chain() {
-        let chain = TokenSequence::from_token_id(42);
+        let chain = MergeSequence::from_token_id(42);
         let nodes: Vec<_> = chain.iter().collect();
 
         assert_eq!(chain.head, Some(0));
@@ -273,7 +274,7 @@ mod tests {
 
     #[test]
     fn splice_on_two_node_chain_produces_single_live_node() {
-        let mut chain = TokenSequence::new(b"ab");
+        let mut chain = MergeSequence::new(b"ab");
 
         let merged_pos = chain.splice(0, 1, 300);
         let nodes: Vec<_> = chain.iter().collect();
@@ -290,10 +291,10 @@ mod tests {
 
     #[test]
     fn splice_updates_tail_when_merging_last_pair() {
-        let mut chain = TokenSequence::new(b"abc");
+        let mut chain = MergeSequence::new(b"abc");
 
         let merged_pos = chain.splice(1, 2, 500);
-        let nodes: Vec<(NodePos, u32)> = chain
+        let nodes: Vec<(MergeNodeSlot, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
@@ -309,12 +310,12 @@ mod tests {
 
     #[test]
     fn iter_follows_updated_links_after_multiple_splices() {
-        let mut chain = TokenSequence::new(b"abcde");
+        let mut chain = MergeSequence::new(b"abcde");
 
         let first = chain.splice(1, 2, 600);
         let second = chain.splice(first, 3, 601);
 
-        let nodes: Vec<(NodePos, u32)> = chain
+        let nodes: Vec<(MergeNodeSlot, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
@@ -329,10 +330,10 @@ mod tests {
 
     #[test]
     fn splice_keeps_head_when_merging_non_head_pair() {
-        let mut chain = TokenSequence::new(b"abcd");
+        let mut chain = MergeSequence::new(b"abcd");
 
         chain.splice(2, 3, 700);
-        let nodes: Vec<(NodePos, u32)> = chain
+        let nodes: Vec<(MergeNodeSlot, u32)> = chain
             .iter()
             .map(|(pos, node)| (pos, node.token_id))
             .collect();
