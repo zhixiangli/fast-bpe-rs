@@ -57,13 +57,9 @@ enum Segment<'a> {
 /// ```
 #[derive(Debug)]
 pub struct BPE {
-    /// Regex used to split ordinary text into independently-mergeable spans.
-    split_pattern: Regex,
-    /// Source pattern used to build worker-local split regexes during parallel training.
+    /// Source pattern used to build worker-local split regexes.
     split_pattern_source: String,
-    /// Regex that spots special tokens before normal splitting is applied.
-    special_split_pattern: Option<Regex>,
-    /// Source pattern used to build worker-local special-token regexes during parallel training.
+    /// Source pattern used to build worker-local special-token regexes.
     special_split_pattern_source: Option<String>,
     /// Mapping from literal special-token text to the externally-visible token id.
     special_tokens: HashMap<String, TokenId>,
@@ -94,20 +90,23 @@ pub struct BPE {
 impl BPE {
     pub const DEFAULT_SPLIT_PATTERN: &str = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}++|\p{N}{1,3}+| ?[^\s\p{L}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s";
 
-    fn split_matches<'a>(&'a self, segment: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-        self.split_pattern
+    fn split_matches<'a>(
+        split_pattern: &'a Regex,
+        segment: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        split_pattern
             .find_iter(segment)
             .map(|matched| matched.expect("split regex evaluation should succeed"))
             .map(|matched| matched.as_str())
     }
 
     fn for_each_segment_between_specials(
-        &self,
         doc: &str,
+        special_split_pattern: Option<&Regex>,
         mut on_segment: impl FnMut(Segment<'_>),
     ) {
         let mut cursor = 0;
-        if let Some(special_split_pattern) = &self.special_split_pattern {
+        if let Some(special_split_pattern) = special_split_pattern {
             for matched in special_split_pattern
                 .find_iter(doc)
                 .map(|matched| matched.expect("special token regex evaluation should succeed"))
@@ -118,19 +117,6 @@ impl BPE {
             }
         }
         on_segment(Segment::Regular(&doc[cursor..]));
-    }
-
-    /// Splits input text into byte chunks for training, using special tokens only as boundaries.
-    ///
-    /// Training learns merges from raw byte spans, so special tokens are excluded rather than
-    /// materialized as token ids.
-    #[cfg(test)]
-    fn split_for_training_bytes(&self, doc: impl AsRef<str>) -> Vec<SmallVec<[u8; 16]>> {
-        Self::split_for_training_bytes_with_patterns(
-            doc,
-            &self.split_pattern,
-            self.special_split_pattern.as_ref(),
-        )
     }
 
     fn split_for_training_bytes_with_patterns(
@@ -175,17 +161,14 @@ impl BPE {
             .into_iter()
             .map(|doc| doc.as_ref().to_owned())
             .collect();
-        let split_pattern_source = self.split_pattern_source.clone();
-        let special_split_pattern_source = self.special_split_pattern_source.clone();
-
         docs.par_iter()
             .fold(
                 || {
                     (
                         AHashMap::<SmallVec<[u8; 16]>, u32>::new(),
-                        Regex::new(&split_pattern_source)
+                        Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
-                        special_split_pattern_source.as_ref().map(|pattern| {
+                        self.special_split_pattern_source.as_ref().map(|pattern| {
                             Regex::new(pattern)
                                 .expect("special token regex source should remain valid")
                         }),
@@ -206,9 +189,9 @@ impl BPE {
                 || {
                     (
                         AHashMap::<SmallVec<[u8; 16]>, u32>::new(),
-                        Regex::new(&split_pattern_source)
+                        Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
-                        special_split_pattern_source.as_ref().map(|pattern| {
+                        self.special_split_pattern_source.as_ref().map(|pattern| {
                             Regex::new(pattern)
                                 .expect("special token regex source should remain valid")
                         }),
@@ -299,7 +282,7 @@ impl BPE {
         let split_pattern_source = split_pattern
             .unwrap_or(Self::DEFAULT_SPLIT_PATTERN)
             .to_owned();
-        let split_pattern = Regex::new(&split_pattern_source).map_err(BPEError::from)?;
+        Regex::new(&split_pattern_source).map_err(BPEError::from)?;
         let mut vocab: HashMap<TokenId, Vec<u8>> = (0..BASE_VOCAB_SIZE)
             .map(|byte| (byte, vec![byte as u8]))
             .collect();
@@ -323,16 +306,14 @@ impl BPE {
         }
 
         let special_split_pattern_source = Self::build_special_token_pattern(&special_token_map);
-        let special_split_pattern = special_split_pattern_source
+        special_split_pattern_source
             .as_deref()
             .map(Regex::new)
             .transpose()
             .map_err(BPEError::from)?;
 
         Ok(Self {
-            split_pattern,
             split_pattern_source,
-            special_split_pattern,
             special_split_pattern_source,
             special_tokens: special_token_map,
             vocab,
@@ -713,18 +694,26 @@ impl BPE {
     fn split_impl(&self, doc: impl AsRef<str>, include_special_tokens: bool) -> Vec<Chain> {
         let doc = doc.as_ref();
         let mut chains = Vec::new();
+        let split_pattern =
+            Regex::new(&self.split_pattern_source).expect("split regex source should remain valid");
+        let special_split_pattern = self.special_split_pattern_source.as_ref().map(|pattern| {
+            Regex::new(pattern).expect("special token regex source should remain valid")
+        });
 
-        self.for_each_segment_between_specials(doc, |segment| match segment {
-            Segment::Regular(segment) => {
-                chains.extend(
-                    self.split_matches(segment)
-                        .map(|matched| Chain::new(matched.as_bytes())),
-                );
-            }
-            Segment::Special(special) => {
-                if include_special_tokens && let Some(&token_id) = self.special_tokens.get(special)
-                {
-                    chains.push(Chain::from_token_id(token_id));
+        Self::for_each_segment_between_specials(doc, special_split_pattern.as_ref(), |segment| {
+            match segment {
+                Segment::Regular(segment) => {
+                    chains.extend(
+                        Self::split_matches(&split_pattern, segment)
+                            .map(|matched| Chain::new(matched.as_bytes())),
+                    );
+                }
+                Segment::Special(special) => {
+                    if include_special_tokens
+                        && let Some(&token_id) = self.special_tokens.get(special)
+                    {
+                        chains.push(Chain::from_token_id(token_id));
+                    }
                 }
             }
         });
@@ -756,6 +745,19 @@ impl Default for BPE {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn training_chunks(bpe: &BPE, doc: &str) -> Vec<SmallVec<[u8; 16]>> {
+        let split_pattern =
+            Regex::new(&bpe.split_pattern_source).expect("split regex source should remain valid");
+        let special_split_pattern = bpe.special_split_pattern_source.as_ref().map(|pattern| {
+            Regex::new(pattern).expect("special token regex source should remain valid")
+        });
+        BPE::split_for_training_bytes_with_patterns(
+            doc,
+            &split_pattern,
+            special_split_pattern.as_ref(),
+        )
+    }
 
     #[test]
     fn train_learns_most_frequent_pair_and_roundtrips() {
@@ -792,7 +794,7 @@ mod tests {
     fn split_for_training_bytes_uses_special_tokens_as_boundaries() {
         let bpe = BPE::new(Some("(?s).+"), Some([("<|eot|>", BASE_VOCAB_SIZE)]))
             .expect("valid config should construct");
-        let chunks = bpe.split_for_training_bytes("left<|eot|>right");
+        let chunks = training_chunks(&bpe, "left<|eot|>right");
         assert_eq!(
             chunks.iter().map(SmallVec::as_slice).collect::<Vec<_>>(),
             vec![b"left".as_slice(), b"right".as_slice()]
@@ -931,7 +933,7 @@ mod tests {
         let bpe = BPE::new(Some(r"\S+"), Some([("<pad>", 300), ("<eos>", 301)]))
             .expect("valid config should construct");
         assert_eq!(
-            bpe.split_for_training_bytes("hi<pad><eos>there")
+            training_chunks(&bpe, "hi<pad><eos>there")
                 .iter()
                 .map(SmallVec::as_slice)
                 .collect::<Vec<_>>(),
