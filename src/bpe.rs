@@ -59,8 +59,12 @@ enum Segment<'a> {
 pub struct BPE {
     /// Regex used to split ordinary text into independently-mergeable spans.
     split_pattern: Regex,
+    /// Source pattern used to build worker-local split regexes during parallel training.
+    split_pattern_source: String,
     /// Regex that spots special tokens before normal splitting is applied.
     special_split_pattern: Option<Regex>,
+    /// Source pattern used to build worker-local special-token regexes during parallel training.
+    special_split_pattern_source: Option<String>,
     /// Mapping from literal special-token text to the externally-visible token id.
     special_tokens: HashMap<String, TokenId>,
     /// Vocabulary entries materialized as raw bytes for decode/inspection.
@@ -120,18 +124,44 @@ impl BPE {
     ///
     /// Training learns merges from raw byte spans, so special tokens are excluded rather than
     /// materialized as token ids.
+    #[cfg(test)]
     fn split_for_training_bytes(&self, doc: impl AsRef<str>) -> Vec<SmallVec<[u8; 16]>> {
+        Self::split_for_training_bytes_with_patterns(
+            doc,
+            &self.split_pattern,
+            self.special_split_pattern.as_ref(),
+        )
+    }
+
+    fn split_for_training_bytes_with_patterns(
+        doc: impl AsRef<str>,
+        split_pattern: &Regex,
+        special_split_pattern: Option<&Regex>,
+    ) -> Vec<SmallVec<[u8; 16]>> {
         let doc = doc.as_ref();
         let mut chunks = Vec::new();
+        let mut cursor = 0;
 
-        self.for_each_segment_between_specials(doc, |segment| {
-            if let Segment::Regular(segment) = segment {
+        if let Some(special_split_pattern) = special_split_pattern {
+            for matched in special_split_pattern
+                .find_iter(doc)
+                .map(|matched| matched.expect("special token regex evaluation should succeed"))
+            {
                 chunks.extend(
-                    self.split_matches(segment)
-                        .map(|matched| SmallVec::from_slice(matched.as_bytes())),
+                    split_pattern
+                        .find_iter(&doc[cursor..matched.start()])
+                        .map(|matched| matched.expect("split regex evaluation should succeed"))
+                        .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
                 );
+                cursor = matched.end();
             }
-        });
+        }
+        chunks.extend(
+            split_pattern
+                .find_iter(&doc[cursor..])
+                .map(|matched| matched.expect("split regex evaluation should succeed"))
+                .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
+        );
         chunks
     }
 
@@ -145,26 +175,58 @@ impl BPE {
             .into_iter()
             .map(|doc| doc.as_ref().to_owned())
             .collect();
+        let split_pattern_source = self.split_pattern_source.clone();
+        let special_split_pattern_source = self.special_split_pattern_source.clone();
 
         docs.par_iter()
             .fold(
-                AHashMap::<SmallVec<[u8; 16]>, u32>::new,
-                |mut local_counts, doc| {
-                    for chunk in self.split_for_training_bytes(doc) {
+                || {
+                    (
+                        AHashMap::<SmallVec<[u8; 16]>, u32>::new(),
+                        Regex::new(&split_pattern_source)
+                            .expect("split regex source should remain valid"),
+                        special_split_pattern_source.as_ref().map(|pattern| {
+                            Regex::new(pattern)
+                                .expect("special token regex source should remain valid")
+                        }),
+                    )
+                },
+                |(mut local_counts, split_pattern, special_split_pattern), doc| {
+                    for chunk in Self::split_for_training_bytes_with_patterns(
+                        doc,
+                        &split_pattern,
+                        special_split_pattern.as_ref(),
+                    ) {
                         *local_counts.entry(chunk).or_default() += 1;
                     }
-                    local_counts
+                    (local_counts, split_pattern, special_split_pattern)
                 },
             )
             .reduce(
-                AHashMap::<SmallVec<[u8; 16]>, u32>::new,
-                |mut global_counts, local_counts| {
+                || {
+                    (
+                        AHashMap::<SmallVec<[u8; 16]>, u32>::new(),
+                        Regex::new(&split_pattern_source)
+                            .expect("split regex source should remain valid"),
+                        special_split_pattern_source.as_ref().map(|pattern| {
+                            Regex::new(pattern)
+                                .expect("special token regex source should remain valid")
+                        }),
+                    )
+                },
+                |(mut global_counts, global_split_pattern, global_special_split_pattern),
+                 (local_counts, _, _)| {
                     for (chunk, frequency) in local_counts {
                         *global_counts.entry(chunk).or_default() += frequency;
                     }
-                    global_counts
+                    (
+                        global_counts,
+                        global_split_pattern,
+                        global_special_split_pattern,
+                    )
                 },
             )
+            .0
             .into_iter()
             .map(|(chunk, frequency)| WeightedChain {
                 chain: Chain::new(&chunk),
@@ -234,8 +296,10 @@ impl BPE {
         split_pattern: Option<&str>,
         special_tokens: Option<impl IntoIterator<Item = (impl Into<String>, TokenId)>>,
     ) -> Result<Self, BPEError> {
-        let split_pattern = Regex::new(split_pattern.unwrap_or(Self::DEFAULT_SPLIT_PATTERN))
-            .map_err(BPEError::from)?;
+        let split_pattern_source = split_pattern
+            .unwrap_or(Self::DEFAULT_SPLIT_PATTERN)
+            .to_owned();
+        let split_pattern = Regex::new(&split_pattern_source).map_err(BPEError::from)?;
         let mut vocab: HashMap<TokenId, Vec<u8>> = (0..BASE_VOCAB_SIZE)
             .map(|byte| (byte, vec![byte as u8]))
             .collect();
@@ -258,7 +322,8 @@ impl BPE {
             special_token_map.insert(token, token_id);
         }
 
-        let special_split_pattern = Self::build_special_token_pattern(&special_token_map)
+        let special_split_pattern_source = Self::build_special_token_pattern(&special_token_map);
+        let special_split_pattern = special_split_pattern_source
             .as_deref()
             .map(Regex::new)
             .transpose()
@@ -266,7 +331,9 @@ impl BPE {
 
         Ok(Self {
             split_pattern,
+            split_pattern_source,
             special_split_pattern,
+            special_split_pattern_source,
             special_tokens: special_token_map,
             vocab,
             merge_map: HashMap::new(),
