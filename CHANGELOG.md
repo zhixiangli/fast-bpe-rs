@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.3.0...v0.3.1) (2026-04-04)
+
+
+### Performance Improvements
+
+* compile worker-local regexes during training chain build ([#106](https://github.com/zhixiangli/fast-bpe-rs/issues/106)) ([62fad02](https://github.com/zhixiangli/fast-bpe-rs/commit/62fad0209a3d083198ae9c7f7f14ff99b176ece3))
+
 ## [0.3.0](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.2.1...v0.3.0) (2026-04-03)
 
 
