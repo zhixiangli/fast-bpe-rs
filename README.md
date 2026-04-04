@@ -53,16 +53,6 @@ bpe = BPE(
 bpe.train(32768, corpus_lines)
 ```
 
-### WikiText benchmark script
-
-A Python benchmark equivalent to the old Rust `src/main.rs` entrypoint lives at `python/train_wikitext.py`.
-It requires the Hugging Face `datasets` package:
-
-```bash
-pip install datasets
-python python/train_wikitext.py --target-vocab-size 32768 --runs 3
-```
-
 ### Special tokens
 
 ```python
