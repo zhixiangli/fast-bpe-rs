@@ -60,10 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut bpe = BPE::new(None, None::<Vec<(String, u32)>>)?;
     let started = Instant::now();
     bpe.train(TARGET_VOCAB_SIZE, docs.iter());
-    println!(
-        "TRAIN_RUN mode=speed elapsed_ms={}",
-        started.elapsed().as_millis()
-    );
+    println!("TRAIN_RUN elapsed_ms={}", started.elapsed().as_millis());
     println!("TRAINING_COMPLETE finished=true");
 
     Ok(())
