@@ -9,10 +9,10 @@ pub(crate) type TokenId = u32;
 pub(crate) type MergeNodeSlot = u32;
 /// Adjacent token pair used as the key for merge rules.
 pub(crate) type TokenIdPair = (TokenId, TokenId);
-/// Index into [`crate::bpe::BPE`] training chains.
+/// Index into [`crate::bpe::BPE`] training merge sequences.
 pub(crate) type MergeSequenceIndex = usize;
 /// All observed locations for a pair, ordered deterministically for stable iteration.
-pub(crate) type PairLocations = rustc_hash::FxHashSet<(MergeSequenceIndex, MergeNodeSlot)>;
+pub(crate) type TokenIdPairOccurrences = rustc_hash::FxHashSet<(MergeSequenceIndex, MergeNodeSlot)>;
 /// Fast hash map used for pair-keyed training indexes.
 pub(crate) type SeedMap<V> = rustc_hash::FxHashMap<TokenIdPair, V>;
 /// Byte chunk representation used while splitting and aggregating training corpora.
