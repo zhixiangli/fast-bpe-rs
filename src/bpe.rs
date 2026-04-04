@@ -10,6 +10,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 
+type TrainingChunk = SmallVec<[u8; 32]>;
+
 /// One unique training chunk plus the number of corpus occurrences it represents.
 #[derive(Debug)]
 struct WeightedChain {
@@ -123,7 +125,7 @@ impl BPE {
         doc: impl AsRef<str>,
         split_pattern: &Regex,
         special_split_pattern: Option<&Regex>,
-    ) -> Vec<SmallVec<[u8; 16]>> {
+    ) -> Vec<TrainingChunk> {
         let doc = doc.as_ref();
         let mut chunks = Vec::new();
         let mut cursor = 0;
@@ -137,7 +139,7 @@ impl BPE {
                     split_pattern
                         .find_iter(&doc[cursor..matched.start()])
                         .map(|matched| matched.expect("split regex evaluation should succeed"))
-                        .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
+                        .map(|matched| TrainingChunk::from_slice(matched.as_str().as_bytes())),
                 );
                 cursor = matched.end();
             }
@@ -146,7 +148,7 @@ impl BPE {
             split_pattern
                 .find_iter(&doc[cursor..])
                 .map(|matched| matched.expect("split regex evaluation should succeed"))
-                .map(|matched| SmallVec::from_slice(matched.as_str().as_bytes())),
+                .map(|matched| TrainingChunk::from_slice(matched.as_str().as_bytes())),
         );
         chunks
     }
@@ -165,7 +167,7 @@ impl BPE {
             .fold(
                 || {
                     (
-                        AHashMap::<SmallVec<[u8; 16]>, u32>::new(),
+                        AHashMap::<TrainingChunk, u32>::new(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -188,7 +190,7 @@ impl BPE {
             .reduce(
                 || {
                     (
-                        AHashMap::<SmallVec<[u8; 16]>, u32>::new(),
+                        AHashMap::<TrainingChunk, u32>::new(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -746,7 +748,7 @@ impl Default for BPE {
 mod tests {
     use super::*;
 
-    fn training_chunks(bpe: &BPE, doc: &str) -> Vec<SmallVec<[u8; 16]>> {
+    fn training_chunks(bpe: &BPE, doc: &str) -> Vec<TrainingChunk> {
         let split_pattern =
             Regex::new(&bpe.split_pattern_source).expect("split regex source should remain valid");
         let special_split_pattern = bpe.special_split_pattern_source.as_ref().map(|pattern| {
