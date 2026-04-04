@@ -41,7 +41,8 @@ enum Segment<'a> {
 /// docs
 ///   |
 ///   v
-/// split_for_training_bytes (regex chunks; special tokens are boundaries only)
+/// split into regular segments + special-token boundaries
+///   regular segments -> regex chunk matches (bytes)
 ///   |
 ///   v
 /// build_training_chains (deduplicate chunks -> weighted chains)
@@ -51,7 +52,7 @@ enum Segment<'a> {
 ///   |
 ///   v
 /// repeat until vocab full:
-///   pick highest-frequency token-id pair
+///   pick highest-frequency token-id pair (stable tie-break: lexical pair order)
 ///   materialize merged token bytes
 ///   splice every recorded occurrence in-place
 ///   adjust only affected neighboring token-id pairs
@@ -120,8 +121,19 @@ impl BPE {
         on_segment(Segment::Regular(&doc[cursor..]));
     }
 
-    /// Parallel fold+reduce over all docs, producing byte-chunk frequencies without allocating
-    /// duplicate chains for repeated chunks.
+    /// Parallel fold+reduce over all docs, producing byte-chunk frequencies.
+    ///
+    /// Think of this stage as a distributed "word histogram", but at regex-chunk byte granularity:
+    ///
+    /// ```text
+    /// worker 1: {"the": 2, "cat": 1}
+    /// worker 2: {"the": 1, "sat": 3}
+    /// --------------------------------
+    /// reduce  : {"the": 3, "cat": 1, "sat": 3}
+    /// ```
+    ///
+    /// Later, each unique chunk becomes exactly one chain with a `frequency` weight, so repeated
+    /// text does not allocate duplicate chain structures.
     fn build_training_chains(
         &self,
         docs: impl IntoIterator<Item = impl AsRef<str>>,
@@ -216,7 +228,7 @@ impl BPE {
             .collect()
     }
 
-    /// Counts every adjacent token-id pair in parallel and records all locations where each pair appears.
+    /// Counts every adjacent token-id pair in parallel and records all left-node locations.
     ///
     /// The resulting map is used to seed `token_id_pair_info` and `count_to_token_id_pairs` in one
     /// pass with one bucket insertion per unique token-id pair.
@@ -429,6 +441,9 @@ impl BPE {
         self.max_token_id_pair_count = self.max_token_id_pair_count.max(new_count);
     }
 
+    /// Returns the current best merge candidate:
+    /// - highest observed frequency bucket
+    /// - deterministic tie-break by `(left_id, right_id)` order.
     fn best_token_id_pair(&self) -> Option<TokenIdPair> {
         self.count_to_token_id_pairs
             .get(&self.max_token_id_pair_count)
@@ -547,7 +562,7 @@ impl BPE {
     ///      count_to_token_id_pairs[count] += (L,R)
     ///      |
     ///      v
-    /// [4] for merged_id in vocabulary-growth order:
+    /// [4] for merged_id in vocabulary-growth order (skipping reserved special-token ids):
     ///      |
     ///      +--> select best_token_id_pair from count_to_token_id_pairs[max_token_id_pair_count]
     ///      |      (deterministic tie break by lexical token-id-pair order)
@@ -560,6 +575,20 @@ impl BPE {
     ///             splice(left,right -> merged_id)
     ///             adjust frequencies for old neighbors removed
     ///             adjust frequencies for new neighbors created
+    /// ```
+    ///
+    /// Local splice/update picture for one occurrence:
+    ///
+    /// ```text
+    /// before:   P <-> L <-> R <-> N
+    /// pair:            (L,R)              chosen best pair
+    ///
+    /// after :   P <->  M  <-> N
+    ///                merged_id
+    ///
+    /// counters:
+    ///   remove (P,L) and (R,N)   [if those neighbors exist]
+    ///   add    (P,M) and (M,N)
     /// ```
     ///
     /// Because only local neighborhoods are re-counted after each splice, training scales with
@@ -622,10 +651,10 @@ impl BPE {
         self.chains = chains;
     }
 
-    /// Encodes text by repeatedly applying the learned merge with the lowest token id available.
+    /// Encodes text by repeatedly applying the currently available merge with the lowest token id.
     ///
-    /// Priority resolution mirrors training chronology because merge ids are assigned in the order
-    /// rules are learned (lower id => earlier, higher-priority merge).
+    /// Priority resolution mirrors training chronology because merge ids are assigned in learning
+    /// order (lower id => earlier, higher-priority merge).
     ///
     /// Per-chain encode flow:
     ///
@@ -636,7 +665,7 @@ impl BPE {
     /// scan adjacent token-id pairs -> candidate merges from merge_map
     ///   |
     ///   v
-    /// choose candidate with smallest merge_id
+    /// choose candidate with smallest merge_id across the whole chain
     ///   |
     ///   +--> none: emit chain token_ids
     ///   |
