@@ -20,13 +20,20 @@ REGEX = (
 )
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train fast_bpe_rs on the WikiText train split and print timing."
     )
     parser.add_argument(
         "--target-vocab-size",
-        type=int,
+        type=positive_int,
         default=DEFAULT_TARGET_VOCAB_SIZE,
         help=(
             "Target vocabulary size for BPE training "
@@ -35,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--runs",
-        type=int,
+        type=positive_int,
         default=DEFAULT_RUNS,
         help=f"Number of training runs to execute (default: {DEFAULT_RUNS}).",
     )
