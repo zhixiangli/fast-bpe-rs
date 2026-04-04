@@ -2,6 +2,7 @@
 
 mod bpe;
 mod error;
+mod merge_candidate_buckets;
 mod merge_sequence;
 mod python;
 mod types;
