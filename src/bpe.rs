@@ -120,39 +120,6 @@ impl BPE {
         on_segment(Segment::Regular(&doc[cursor..]));
     }
 
-    #[cfg(test)]
-    fn split_for_training_bytes_with_patterns(
-        doc: impl AsRef<str>,
-        split_pattern: &Regex,
-        special_split_pattern: Option<&Regex>,
-    ) -> Vec<TrainingChunk> {
-        let doc = doc.as_ref();
-        let mut chunks = Vec::new();
-        let mut cursor = 0;
-
-        if let Some(special_split_pattern) = special_split_pattern {
-            for matched in special_split_pattern
-                .find_iter(doc)
-                .map(|matched| matched.expect("special token regex evaluation should succeed"))
-            {
-                chunks.extend(
-                    split_pattern
-                        .find_iter(&doc[cursor..matched.start()])
-                        .map(|matched| matched.expect("split regex evaluation should succeed"))
-                        .map(|matched| TrainingChunk::from_slice(matched.as_str().as_bytes())),
-                );
-                cursor = matched.end();
-            }
-        }
-        chunks.extend(
-            split_pattern
-                .find_iter(&doc[cursor..])
-                .map(|matched| matched.expect("split regex evaluation should succeed"))
-                .map(|matched| TrainingChunk::from_slice(matched.as_str().as_bytes())),
-        );
-        chunks
-    }
-
     /// Parallel fold+reduce over all docs, producing byte-chunk frequencies without allocating
     /// duplicate chains for repeated chunks.
     fn build_training_chains(
@@ -783,11 +750,16 @@ mod tests {
         let special_split_pattern = bpe.special_split_pattern_source.as_ref().map(|pattern| {
             Regex::new(pattern).expect("special token regex source should remain valid")
         });
-        BPE::split_for_training_bytes_with_patterns(
-            doc,
-            &split_pattern,
-            special_split_pattern.as_ref(),
-        )
+        let mut chunks = Vec::new();
+        BPE::for_each_segment_between_specials(doc, special_split_pattern.as_ref(), |segment| {
+            if let Segment::Regular(segment) = segment {
+                chunks.extend(
+                    BPE::split_matches(&split_pattern, segment)
+                        .map(|matched| TrainingChunk::from_slice(matched.as_bytes())),
+                );
+            }
+        });
+        chunks
     }
 
     #[test]
