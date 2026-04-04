@@ -1,8 +1,8 @@
-use crate::chain::Chain;
 use crate::error::BPEError;
+use crate::merge_sequence::MergeSequence;
 use crate::types::{
-    BASE_VOCAB_SIZE, ChainIndex, NodePos, PairLocations, SeedMap, TokenId, TokenIdPair,
-    TrainingChunk,
+    BASE_VOCAB_SIZE, MergeNodeSlot, MergeSequenceIndex, SeedMap, TokenId, TokenIdPair,
+    TokenIdPairOccurrences, TrainingChunk,
 };
 use ahash::RandomState as AHashRandomState;
 use fancy_regex::{Regex, escape};
@@ -13,15 +13,15 @@ use std::collections::{HashMap, HashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
 #[derive(Debug)]
-struct WeightedChain {
-    chain: Chain,
+struct WeightedMergeSequence {
+    merge_sequence: MergeSequence,
     frequency: u32,
 }
 
 #[derive(Debug, Default)]
 struct TokenIdPairInfo {
     count: u32,
-    locations: PairLocations,
+    occurrences: TokenIdPairOccurrences,
 }
 
 enum Segment<'a> {
@@ -31,7 +31,7 @@ enum Segment<'a> {
 
 /// Byte Pair Encoding model with optional special-token support.
 ///
-/// The core design treats each tokenized chunk as a mutable linked structure (`Chain`) and tracks
+/// The core design treats each tokenized chunk as a mutable linked structure (`MergeSequence`) and tracks
 /// adjacent token-id-pair statistics in a frequency-indexed table. This avoids repeated full rescans of the
 /// corpus during training: after each merge, only neighborhoods around changed nodes are updated.
 ///
@@ -45,7 +45,7 @@ enum Segment<'a> {
 ///   regular segments -> regex chunk matches (bytes)
 ///   |
 ///   v
-/// build_training_chains (deduplicate chunks -> weighted chains)
+/// build_training_merge_sequences (deduplicate chunks -> weighted merge_sequences)
 ///   |
 ///   v
 /// build_initial_token_id_pair_stats (token-id pair -> {count, locations})
@@ -72,7 +72,7 @@ pub struct BPE {
 
     // Training-time index structures.
     //
-    // `chains` stores each unique training chunk once with its corpus multiplicity.
+    // `merge_sequences` stores each unique training chunk once with its corpus multiplicity.
     // `token_id_pair_info` + `count_to_token_id_pairs` form a bidirectional index:
     //
     //   token-id pair ----------------------> metadata
@@ -83,10 +83,10 @@ pub struct BPE {
     //
     // `max_token_id_pair_count` points to the highest non-empty count bucket, so selecting the current
     // best merge is an O(1)-expected bucket lookup plus tie-break in that bucket.
-    chains: Vec<WeightedChain>,
+    merge_sequences: Vec<WeightedMergeSequence>,
     count_to_token_id_pairs: FxHashMap<u32, FxHashSet<TokenIdPair>>, // frequency -> token-id pairs
     max_token_id_pair_count: u32, // largest non-empty frequency bucket
-    token_id_pair_info: FxHashMap<TokenIdPair, TokenIdPairInfo>, // token-id pair -> {frequency, (chain_idx, node_pos)}
+    token_id_pair_info: FxHashMap<TokenIdPair, TokenIdPairInfo>, // token-id pair -> {frequency, (merge_sequence_idx, node_pos)}
 }
 
 impl BPE {
@@ -132,12 +132,12 @@ impl BPE {
     /// reduce  : {"the": 3, "cat": 1, "sat": 3}
     /// ```
     ///
-    /// Later, each unique chunk becomes exactly one chain with a `frequency` weight, so repeated
-    /// text does not allocate duplicate chain structures.
-    fn build_training_chains(
+    /// Later, each unique chunk becomes exactly one merge_sequence with a `frequency` weight, so repeated
+    /// text does not allocate duplicate merge_sequence structures.
+    fn build_training_merge_sequences(
         &self,
         docs: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Vec<WeightedChain> {
+    ) -> Vec<WeightedMergeSequence> {
         #[inline]
         fn count_chunk(
             counts: &mut HbHashMap<TrainingChunk, u32, AHashRandomState>,
@@ -221,8 +221,8 @@ impl BPE {
             )
             .0
             .into_iter()
-            .map(|(chunk, frequency)| WeightedChain {
-                chain: Chain::new(&chunk),
+            .map(|(chunk, frequency)| WeightedMergeSequence {
+                merge_sequence: MergeSequence::new(&chunk),
                 frequency,
             })
             .collect()
@@ -233,29 +233,33 @@ impl BPE {
     /// The resulting map is used to seed `token_id_pair_info` and `count_to_token_id_pairs` in one
     /// pass with one bucket insertion per unique token-id pair.
     fn build_initial_token_id_pair_stats(
-        chains: &[WeightedChain],
-    ) -> SeedMap<(u32, Vec<(ChainIndex, NodePos)>)> {
-        chains
+        merge_sequences: &[WeightedMergeSequence],
+    ) -> SeedMap<(u32, Vec<(MergeSequenceIndex, MergeNodeSlot)>)> {
+        merge_sequences
             .par_iter()
             .enumerate()
             .fold(
-                SeedMap::<(u32, Vec<(ChainIndex, NodePos)>)>::default,
-                |mut local_token_id_pairs, (chain_index, weighted_chain)| {
-                    let token_id_pair_capacity = weighted_chain.chain.nodes.len().saturating_sub(1);
+                SeedMap::<(u32, Vec<(MergeSequenceIndex, MergeNodeSlot)>)>::default,
+                |mut local_token_id_pairs, (merge_sequence_index, weighted_merge_sequence)| {
+                    let token_id_pair_capacity = weighted_merge_sequence
+                        .merge_sequence
+                        .slots
+                        .len()
+                        .saturating_sub(1);
                     if token_id_pair_capacity > 0 {
                         local_token_id_pairs.reserve(token_id_pair_capacity);
                     }
 
-                    let frequency = weighted_chain.frequency;
+                    let frequency = weighted_merge_sequence.frequency;
                     let mut previous = None;
-                    for (pos, node) in weighted_chain.chain.iter() {
-                        if let Some((left_pos, left_id)) = previous {
+                    for (pos, node) in weighted_merge_sequence.merge_sequence.iter() {
+                        if let Some((left_slot, left_id)) = previous {
                             let token_id_pair = (left_id, node.token_id);
-                            let (count, locations) = local_token_id_pairs
+                            let (count, occurrences) = local_token_id_pairs
                                 .entry(token_id_pair)
                                 .or_insert_with(|| (0, Vec::with_capacity(1)));
                             *count += frequency;
-                            locations.push((chain_index, left_pos));
+                            occurrences.push((merge_sequence_index, left_slot));
                         }
                         previous = Some((pos, node.token_id));
                     }
@@ -263,15 +267,15 @@ impl BPE {
                 },
             )
             .reduce(
-                SeedMap::<(u32, Vec<(ChainIndex, NodePos)>)>::default,
+                SeedMap::<(u32, Vec<(MergeSequenceIndex, MergeNodeSlot)>)>::default,
                 |mut global_token_id_pairs, local_token_id_pairs| {
                     global_token_id_pairs.reserve(local_token_id_pairs.len());
-                    for (token_id_pair, (count, mut locations)) in local_token_id_pairs {
-                        let (global_count, global_locations) = global_token_id_pairs
+                    for (token_id_pair, (count, mut occurrences)) in local_token_id_pairs {
+                        let (global_count, global_occurrences) = global_token_id_pairs
                             .entry(token_id_pair)
-                            .or_insert_with(|| (0, Vec::with_capacity(locations.len())));
+                            .or_insert_with(|| (0, Vec::with_capacity(occurrences.len())));
                         *global_count += count;
-                        global_locations.append(&mut locations);
+                        global_occurrences.append(&mut occurrences);
                     }
                     global_token_id_pairs
                 },
@@ -328,7 +332,7 @@ impl BPE {
             special_tokens: special_token_map,
             vocab,
             merge_map: HashMap::new(),
-            chains: Vec::new(),
+            merge_sequences: Vec::new(),
             count_to_token_id_pairs: FxHashMap::default(),
             max_token_id_pair_count: 0,
             token_id_pair_info: FxHashMap::default(),
@@ -358,7 +362,7 @@ impl BPE {
 
     /// Updates token-id-pair frequency and location indexes after one local topology change.
     ///
-    /// `delta` is weighted by the source chunk frequency, so one splice in a chain that
+    /// `delta` is weighted by the source chunk frequency, so one splice in a merge_sequence that
     /// represents N duplicate corpus chunks contributes N increments/decrements.
     ///
     /// Index-mutation flow:
@@ -369,7 +373,7 @@ impl BPE {
     ///   v
     /// mutate token_id_pair_info[token_id_pair]:
     ///   count += delta
-    ///   locations +/- (chain_index, pos)
+    ///   locations +/- (merge_sequence_index, pos)
     ///   |
     ///   +--> old_count bucket: remove token_id_pair
     ///   |
@@ -387,8 +391,8 @@ impl BPE {
     fn adjust(
         &mut self,
         token_id_pair: TokenIdPair,
-        chain_index: ChainIndex,
-        pos: NodePos,
+        merge_sequence_index: MergeSequenceIndex,
+        pos: MergeNodeSlot,
         delta: i64,
     ) {
         let (old_count, new_count) = {
@@ -404,9 +408,13 @@ impl BPE {
 
             token_id_pair_info.count = new_count;
             if delta > 0 {
-                token_id_pair_info.locations.insert((chain_index, pos));
+                token_id_pair_info
+                    .occurrences
+                    .insert((merge_sequence_index, pos));
             } else {
-                token_id_pair_info.locations.remove(&(chain_index, pos));
+                token_id_pair_info
+                    .occurrences
+                    .remove(&(merge_sequence_index, pos));
             }
             (old_count, new_count)
         };
@@ -461,14 +469,14 @@ impl BPE {
         self.merge_map.insert(token_id_pair, merged_id);
     }
 
-    fn take_token_id_pair_locations(
+    fn take_token_id_pair_occurrences(
         &mut self,
         token_id_pair: TokenIdPair,
-    ) -> Vec<(ChainIndex, NodePos)> {
+    ) -> Vec<(MergeSequenceIndex, MergeNodeSlot)> {
         let removed_token_id_pair_info = self.token_id_pair_info.remove(&token_id_pair);
-        let token_id_pair_locations = removed_token_id_pair_info
+        let token_id_pair_occurrences = removed_token_id_pair_info
             .as_ref()
-            .map(|info| info.locations.iter().copied().collect())
+            .map(|info| info.occurrences.iter().copied().collect())
             .unwrap_or_default();
 
         if let Some(token_id_pair_info) = removed_token_id_pair_info {
@@ -487,25 +495,29 @@ impl BPE {
             }
         }
 
-        token_id_pair_locations
+        token_id_pair_occurrences
     }
 
     fn apply_token_id_pair_merge_at(
         &mut self,
-        chains: &mut [WeightedChain],
+        merge_sequences: &mut [WeightedMergeSequence],
         token_id_pair: TokenIdPair,
         merged_id: TokenId,
-        chain_index: ChainIndex,
-        left_pos: NodePos,
+        merge_sequence_index: MergeSequenceIndex,
+        left_slot: MergeNodeSlot,
     ) {
-        let frequency = i64::from(chains[chain_index].frequency);
-        let Some(left_node) = chains[chain_index].chain.nodes[left_pos as usize] else {
+        let frequency = i64::from(merge_sequences[merge_sequence_index].frequency);
+        let Some(left_node) =
+            merge_sequences[merge_sequence_index].merge_sequence.slots[left_slot as usize]
+        else {
             return;
         };
-        let Some(right_pos) = left_node.next else {
+        let Some(right_slot) = left_node.next else {
             return;
         };
-        let Some(right_node) = chains[chain_index].chain.nodes[right_pos as usize] else {
+        let Some(right_node) =
+            merge_sequences[merge_sequence_index].merge_sequence.slots[right_slot as usize]
+        else {
             return;
         };
         if (left_node.token_id, right_node.token_id) != token_id_pair {
@@ -515,33 +527,43 @@ impl BPE {
         let prev = left_node.prev;
         let next = right_node.next;
         let prev_id = prev.map(|pos| {
-            chains[chain_index].chain.nodes[pos as usize]
+            merge_sequences[merge_sequence_index].merge_sequence.slots[pos as usize]
                 .expect("previous node must exist")
                 .token_id
         });
         let next_id = next.map(|pos| {
-            chains[chain_index].chain.nodes[pos as usize]
+            merge_sequences[merge_sequence_index].merge_sequence.slots[pos as usize]
                 .expect("next node must exist")
                 .token_id
         });
 
-        let new_pos = chains[chain_index]
-            .chain
-            .splice(left_pos, right_pos, merged_id);
+        let new_slot = merge_sequences[merge_sequence_index]
+            .merge_sequence
+            .splice(left_slot, right_slot, merged_id);
 
-        if let (Some(prev_id), Some(prev_pos)) = (prev_id, prev) {
+        if let (Some(prev_id), Some(prev_slot)) = (prev_id, prev) {
             let left_neighbor = (prev_id, token_id_pair.0);
             if left_neighbor != token_id_pair {
-                self.adjust(left_neighbor, chain_index, prev_pos, -frequency);
+                self.adjust(left_neighbor, merge_sequence_index, prev_slot, -frequency);
             }
-            self.adjust((prev_id, merged_id), chain_index, prev_pos, frequency);
+            self.adjust(
+                (prev_id, merged_id),
+                merge_sequence_index,
+                prev_slot,
+                frequency,
+            );
         }
         if let Some(next_id) = next_id {
             let right_neighbor = (token_id_pair.1, next_id);
             if right_neighbor != token_id_pair {
-                self.adjust(right_neighbor, chain_index, right_pos, -frequency);
+                self.adjust(right_neighbor, merge_sequence_index, right_slot, -frequency);
             }
-            self.adjust((merged_id, next_id), chain_index, new_pos, frequency);
+            self.adjust(
+                (merged_id, next_id),
+                merge_sequence_index,
+                new_slot,
+                frequency,
+            );
         }
     }
 
@@ -553,7 +575,7 @@ impl BPE {
     /// [1] reset_training_state
     ///      |
     ///      v
-    /// [2] build weighted chains from docs
+    /// [2] build weighted merge_sequences from docs
     ///      (deduplicate identical chunks -> frequency weight)
     ///      |
     ///      v
@@ -592,16 +614,16 @@ impl BPE {
     /// ```
     ///
     /// Because only local neighborhoods are re-counted after each splice, training scales with
-    /// actual edits rather than repeatedly scanning every adjacency in every chain.
+    /// actual edits rather than repeatedly scanning every adjacency in every merge_sequence.
     pub fn train(&mut self, vocab_size: TokenId, docs: impl IntoIterator<Item = impl AsRef<str>>) {
         self.reset_training_state();
-        self.chains = self.build_training_chains(docs);
+        self.merge_sequences = self.build_training_merge_sequences(docs);
 
-        // Take ownership so we can mutate chains freely while still updating `self`'s indexes.
-        let mut chains = std::mem::take(&mut self.chains);
+        // Take ownership so we can mutate merge_sequences freely while still updating `self`'s indexes.
+        let mut merge_sequences = std::mem::take(&mut self.merge_sequences);
 
         // Seed all token-id pair indexes from a parallel count/location aggregation.
-        let initial_token_id_pair_stats = Self::build_initial_token_id_pair_stats(&chains);
+        let initial_token_id_pair_stats = Self::build_initial_token_id_pair_stats(&merge_sequences);
         if !initial_token_id_pair_stats.is_empty() {
             self.token_id_pair_info
                 .reserve(initial_token_id_pair_stats.len());
@@ -611,12 +633,12 @@ impl BPE {
                 .map(|(count, _)| *count)
                 .max()
                 .unwrap_or_default();
-            for (token_id_pair, (count, locations)) in initial_token_id_pair_stats {
+            for (token_id_pair, (count, occurrences)) in initial_token_id_pair_stats {
                 self.token_id_pair_info.insert(
                     token_id_pair,
                     TokenIdPairInfo {
                         count,
-                        locations: locations.into_iter().collect(),
+                        occurrences: occurrences.into_iter().collect(),
                     },
                 );
                 self.count_to_token_id_pairs
@@ -634,21 +656,21 @@ impl BPE {
                 break;
             };
             self.register_merged_token(merged_id, best_token_id_pair);
-            let best_token_id_pair_locations =
-                self.take_token_id_pair_locations(best_token_id_pair);
+            let best_token_id_pair_occurrences =
+                self.take_token_id_pair_occurrences(best_token_id_pair);
 
-            for (chain_index, left_pos) in best_token_id_pair_locations {
+            for (merge_sequence_index, left_slot) in best_token_id_pair_occurrences {
                 self.apply_token_id_pair_merge_at(
-                    &mut chains,
+                    &mut merge_sequences,
                     best_token_id_pair,
                     merged_id,
-                    chain_index,
-                    left_pos,
+                    merge_sequence_index,
+                    left_slot,
                 );
             }
         }
 
-        self.chains = chains;
+        self.merge_sequences = merge_sequences;
     }
 
     /// Encodes text by repeatedly applying the currently available merge with the lowest token id.
@@ -656,49 +678,49 @@ impl BPE {
     /// Priority resolution mirrors training chronology because merge ids are assigned in learning
     /// order (lower id => earlier, higher-priority merge).
     ///
-    /// Per-chain encode flow:
+    /// Per-merge_sequence encode flow:
     ///
     /// ```text
-    /// chain nodes
+    /// merge_sequence nodes
     ///   |
     ///   v
     /// scan adjacent token-id pairs -> candidate merges from merge_map
     ///   |
     ///   v
-    /// choose candidate with smallest merge_id across the whole chain
+    /// choose candidate with smallest merge_id across the whole merge_sequence
     ///   |
-    ///   +--> none: emit chain token_ids
+    ///   +--> none: emit merge_sequence token_ids
     ///   |
-    ///   +--> some: splice token-id pair and rescan chain
+    ///   +--> some: splice token-id pair and rescan merge_sequence
     /// ```
     pub fn encode(&self, doc: impl AsRef<str>) -> Vec<TokenId> {
-        let mut chains = self.split(doc);
+        let mut merge_sequences = self.split(doc);
         let mut encoded = Vec::new();
 
-        for chain in &mut chains {
+        for merge_sequence in &mut merge_sequences {
             loop {
-                let mut best: Option<(TokenId, NodePos, NodePos)> = None;
-                let mut previous: Option<(NodePos, TokenId)> = None;
+                let mut best: Option<(TokenId, MergeNodeSlot, MergeNodeSlot)> = None;
+                let mut previous: Option<(MergeNodeSlot, TokenId)> = None;
 
-                for (pos, node) in chain.iter() {
-                    if let Some((prev_pos, prev_id)) = previous {
+                for (pos, node) in merge_sequence.iter() {
+                    if let Some((prev_slot, prev_id)) = previous {
                         let token_id_pair = (prev_id, node.token_id);
                         if let Some(&merge_id) = self.merge_map.get(&token_id_pair)
                             && best.is_none_or(|(best_id, _, _)| merge_id < best_id)
                         {
-                            best = Some((merge_id, prev_pos, pos));
+                            best = Some((merge_id, prev_slot, pos));
                         }
                     }
                     previous = Some((pos, node.token_id));
                 }
 
-                let Some((merge_id, left_pos, right_pos)) = best else {
+                let Some((merge_id, left_slot, right_slot)) = best else {
                     break;
                 };
-                chain.splice(left_pos, right_pos, merge_id);
+                merge_sequence.splice(left_slot, right_slot, merge_id);
             }
 
-            encoded.extend(chain.iter().map(|(_, node)| node.token_id));
+            encoded.extend(merge_sequence.iter().map(|(_, node)| node.token_id));
         }
 
         encoded
@@ -713,18 +735,18 @@ impl BPE {
             .collect()
     }
 
-    /// Splits input text into independently-encodable chains.
+    /// Splits input text into independently-encodable merge_sequences.
     ///
     /// Special tokens act like pre-tokenized islands. Everything between them is split by the
-    /// normal regex, but the special-token literals themselves become single-node chains so they
+    /// normal regex, but the special-token literals themselves become single-node merge_sequences so they
     /// never merge with surrounding text.
-    fn split(&self, doc: impl AsRef<str>) -> Vec<Chain> {
+    fn split(&self, doc: impl AsRef<str>) -> Vec<MergeSequence> {
         self.split_impl(doc, true)
     }
 
-    fn split_impl(&self, doc: impl AsRef<str>, include_special_tokens: bool) -> Vec<Chain> {
+    fn split_impl(&self, doc: impl AsRef<str>, include_special_tokens: bool) -> Vec<MergeSequence> {
         let doc = doc.as_ref();
-        let mut chains = Vec::new();
+        let mut merge_sequences = Vec::new();
         let split_pattern =
             Regex::new(&self.split_pattern_source).expect("split regex source should remain valid");
         let special_split_pattern = self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -734,21 +756,21 @@ impl BPE {
         Self::for_each_segment_between_specials(doc, special_split_pattern.as_ref(), |segment| {
             match segment {
                 Segment::Regular(segment) => {
-                    chains.extend(
+                    merge_sequences.extend(
                         Self::split_matches(&split_pattern, segment)
-                            .map(|matched| Chain::new(matched.as_bytes())),
+                            .map(|matched| MergeSequence::new(matched.as_bytes())),
                     );
                 }
                 Segment::Special(special) => {
                     if include_special_tokens
                         && let Some(&token_id) = self.special_tokens.get(special)
                     {
-                        chains.push(Chain::from_token_id(token_id));
+                        merge_sequences.push(MergeSequence::from_token_id(token_id));
                     }
                 }
             }
         });
-        chains
+        merge_sequences
     }
 
     /// Clears all learned merges while preserving the immutable base vocabulary.
@@ -758,7 +780,7 @@ impl BPE {
             *token_id < BASE_VOCAB_SIZE || special_token_ids.contains(token_id)
         });
         self.merge_map.clear();
-        self.chains.clear();
+        self.merge_sequences.clear();
         self.count_to_token_id_pairs.clear();
         self.max_token_id_pair_count = 0;
         self.token_id_pair_info.clear();
@@ -814,8 +836,8 @@ mod tests {
             .expect("valid regex should construct");
         bpe.train(258, ["the the", "the"]);
 
-        assert_eq!(bpe.chains.len(), 1);
-        assert_eq!(bpe.chains[0].frequency, 3);
+        assert_eq!(bpe.merge_sequences.len(), 1);
+        assert_eq!(bpe.merge_sequences[0].frequency, 3);
         assert_eq!(bpe.vocab.get(&256), Some(&b"he".to_vec()));
         assert_eq!(bpe.vocab.get(&257), Some(&b"the".to_vec()));
         assert!(
@@ -885,7 +907,7 @@ mod tests {
         assert!(bpe.decode(Vec::new()).is_empty());
         assert_eq!(bpe.decode(vec![999_999]), Vec::<u8>::new());
         assert!(bpe.merge_map.is_empty());
-        assert!(bpe.chains.is_empty());
+        assert!(bpe.merge_sequences.is_empty());
         assert!(bpe.count_to_token_id_pairs.is_empty());
         assert!(bpe.token_id_pair_info.is_empty());
     }
@@ -1019,18 +1041,23 @@ mod tests {
     }
 
     #[test]
-    fn split_includes_special_tokens_as_single_node_chains() {
+    fn split_includes_special_tokens_as_single_node_merge_sequences() {
         let bpe = BPE::new(Some(r"\S+"), Some([("<pad>", 300), ("<eos>", 301)]))
             .expect("valid config should construct");
 
-        let chains = bpe.split("hi<pad>there<eos>");
-        let tokens_per_chain: Vec<Vec<TokenId>> = chains
+        let merge_sequences = bpe.split("hi<pad>there<eos>");
+        let tokens_per_merge_sequence: Vec<Vec<TokenId>> = merge_sequences
             .iter()
-            .map(|chain| chain.iter().map(|(_, node)| node.token_id).collect())
+            .map(|merge_sequence| {
+                merge_sequence
+                    .iter()
+                    .map(|(_, node)| node.token_id)
+                    .collect()
+            })
             .collect();
 
         assert_eq!(
-            tokens_per_chain,
+            tokens_per_merge_sequence,
             vec![
                 vec![b'h' as u32, b'i' as u32],
                 vec![300],
@@ -1059,14 +1086,19 @@ mod tests {
         let bpe = BPE::new(Some(r"\S+"), Some([("<pad>", 300), ("<eos>", 301)]))
             .expect("valid config should construct");
 
-        let chains = bpe.split("x<eos>y<pad>z");
-        let tokens_per_chain: Vec<Vec<TokenId>> = chains
+        let merge_sequences = bpe.split("x<eos>y<pad>z");
+        let tokens_per_merge_sequence: Vec<Vec<TokenId>> = merge_sequences
             .iter()
-            .map(|chain| chain.iter().map(|(_, node)| node.token_id).collect())
+            .map(|merge_sequence| {
+                merge_sequence
+                    .iter()
+                    .map(|(_, node)| node.token_id)
+                    .collect()
+            })
             .collect();
 
         assert_eq!(
-            tokens_per_chain,
+            tokens_per_merge_sequence,
             vec![
                 vec![b'x' as u32],
                 vec![301],
@@ -1120,8 +1152,8 @@ mod tests {
 
         bpe.train(257, docs);
 
-        assert_eq!(bpe.chains.len(), 1);
-        assert_eq!(bpe.chains[0].frequency as usize, doc_count);
+        assert_eq!(bpe.merge_sequences.len(), 1);
+        assert_eq!(bpe.merge_sequences[0].frequency as usize, doc_count);
         assert_eq!(bpe.vocab.get(&256), Some(&b"xy".to_vec()));
     }
 

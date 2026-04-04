@@ -1,8 +1,8 @@
 //! Crate entry point for the Rust library and Python extension module.
 
 mod bpe;
-mod chain;
 mod error;
+mod merge_sequence;
 mod python;
 mod types;
 

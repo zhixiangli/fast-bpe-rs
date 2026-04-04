@@ -8,9 +8,9 @@ Let `N` be the total number of token positions after splitting, `M` the number o
 
 | Aspect | Naive BPE trainer | `fast-bpe-rs` |
 | --- | --- | --- |
-| Corpus representation | Plain token lists such as `Vec<Vec<u32>>` | Deduplicated weighted training chains |
+| Corpus representation | Plain token lists such as `Vec<Vec<u32>>` | Deduplicated weighted merge sequences |
 | Per-merge work | Recount pairs across the full corpus | Update only neighborhoods touched by the merge |
-| Sequence updates | Rebuild or rewrite token lists repeatedly | In-place splicing in a sparse linked structure backed by `Vec<Option<Node>>` |
+| Sequence updates | Rebuild or rewrite token lists repeatedly | In-place splicing in a sparse linked structure backed by `Vec<Option<MergeNode>>` |
 | Pair statistics | Recomputed from scratch each round | Maintained incrementally as `pair -> {count, locations}` and `count -> set of pairs` |
 | Best-pair lookup | Usually depends on the latest full recount | Pulled from the highest non-empty count bucket |
 | Repeated chunks | Counted again and again | Stored once with a frequency weight |
