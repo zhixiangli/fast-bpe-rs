@@ -29,18 +29,12 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-  "datasets>=4.1",
-  "distro>=1.9",
-  "memory-profiler>=0.61",
-  "maturin>=1.7,<2.0",
+  "maturin>=1.12,<2.0",
   "pre-commit>=4.2",
-  "psutil>=7.0",
-  "py-cpuinfo>=9.0",
-  "pytest>=8.3",
-  "rustbpe>=0.1.0",
-  "ruff>=0.11.13",
+  "pytest>=9.0",
+  "ruff>=0.15.9",
   "tiktoken>=0.12",
-  "twine>=6.1",
+  "twine>=6.2",
 ]
 
 [tool.maturin]
