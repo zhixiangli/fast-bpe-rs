@@ -10,6 +10,7 @@ use fancy_regex::{Regex, escape};
 use hashbrown::{HashMap as HbHashMap, hash_map::EntryRef};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
@@ -134,9 +135,9 @@ impl BPE {
     ///
     /// Later, each unique chunk becomes exactly one merge_sequence with a `frequency` weight, so repeated
     /// text does not allocate duplicate merge_sequence structures.
-    fn build_training_merge_sequences(
+    fn build_training_merge_sequences<'a>(
         &self,
-        docs: impl IntoIterator<Item = impl AsRef<str>>,
+        docs: impl IntoIterator<Item = impl Into<Cow<'a, str>>>,
     ) -> Vec<WeightedMergeSequence> {
         #[inline]
         fn count_chunk(
@@ -153,10 +154,7 @@ impl BPE {
             }
         }
 
-        let docs: Vec<String> = docs
-            .into_iter()
-            .map(|doc| doc.as_ref().to_owned())
-            .collect();
+        let docs: Vec<Cow<'a, str>> = docs.into_iter().map(Into::into).collect();
         docs.par_iter()
             .fold(
                 || {
@@ -173,9 +171,13 @@ impl BPE {
                 |(mut local_counts, split_pattern, special_split_pattern), doc| {
                     let mut cursor = 0usize;
                     if let Some(special_split_pattern) = special_split_pattern.as_ref() {
-                        for matched in special_split_pattern.find_iter(doc).map(|matched| {
-                            matched.expect("special token regex evaluation should succeed")
-                        }) {
+                        for matched in
+                            special_split_pattern
+                                .find_iter(doc.as_ref())
+                                .map(|matched| {
+                                    matched.expect("special token regex evaluation should succeed")
+                                })
+                        {
                             for chunk_match in split_pattern
                                 .find_iter(&doc[cursor..matched.start()])
                                 .map(|chunk_match| {
@@ -578,7 +580,11 @@ impl BPE {
     ///
     /// Because only local neighborhoods are re-counted after each splice, training scales with
     /// actual edits rather than repeatedly scanning every adjacency in every merge_sequence.
-    pub fn train(&mut self, vocab_size: TokenId, docs: impl IntoIterator<Item = impl AsRef<str>>) {
+    pub fn train<'a>(
+        &mut self,
+        vocab_size: TokenId,
+        docs: impl IntoIterator<Item = impl Into<Cow<'a, str>>>,
+    ) {
         self.reset_training_state();
         self.merge_sequences = self.build_training_merge_sequences(docs);
 
