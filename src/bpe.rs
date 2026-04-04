@@ -2,15 +2,13 @@ use crate::chain::Chain;
 use crate::error::BPEError;
 use crate::types::{
     BASE_VOCAB_SIZE, ChainIndex, NodePos, PairLocations, SeedMap, TokenId, TokenIdPair,
+    TrainingChunk,
 };
 use ahash::AHashMap;
 use fancy_regex::{Regex, escape};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
-
-type TrainingChunk = SmallVec<[u8; 32]>;
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
 #[derive(Debug)]
@@ -798,7 +796,10 @@ mod tests {
             .expect("valid config should construct");
         let chunks = training_chunks(&bpe, "left<|eot|>right");
         assert_eq!(
-            chunks.iter().map(SmallVec::as_slice).collect::<Vec<_>>(),
+            chunks
+                .iter()
+                .map(TrainingChunk::as_slice)
+                .collect::<Vec<_>>(),
             vec![b"left".as_slice(), b"right".as_slice()]
         );
     }
@@ -937,7 +938,7 @@ mod tests {
         assert_eq!(
             training_chunks(&bpe, "hi<pad><eos>there")
                 .iter()
-                .map(SmallVec::as_slice)
+                .map(TrainingChunk::as_slice)
                 .collect::<Vec<_>>(),
             vec![b"hi".as_slice(), b"there".as_slice()]
         );
