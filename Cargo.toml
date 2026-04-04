@@ -16,14 +16,14 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 rayon = "1.11.0"
 fancy-regex = "0.14.0"
-pyo3 = { version = "0.28.2", features = ["abi3-py310"] }
+pyo3 = { version = "0.28.3", features = ["abi3-py310"] }
 hf-hub = "0.5.0"
 parquet = "58.1.0"
 ahash = "0.8.12"
-rustc-hash = "2.1.1"
+rustc-hash = "2.1.2"
 smallvec = "1.15.1"
-log = "0.4.28"
-pyo3-log = "0.13.2"
+log = "0.4.29"
+pyo3-log = "0.13.3"
 
 [profile.release]
 lto = "fat"
