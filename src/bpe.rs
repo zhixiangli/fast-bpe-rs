@@ -4,8 +4,9 @@ use crate::types::{
     BASE_VOCAB_SIZE, ChainIndex, NodePos, PairLocations, SeedMap, TokenId, TokenIdPair,
     TrainingChunk,
 };
-use ahash::AHashMap;
+use ahash::RandomState as AHashRandomState;
 use fancy_regex::{Regex, escape};
+use hashbrown::{HashMap as HbHashMap, hash_map::EntryRef};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{HashMap, HashSet};
@@ -119,44 +120,27 @@ impl BPE {
         on_segment(Segment::Regular(&doc[cursor..]));
     }
 
-    fn split_for_training_bytes_with_patterns(
-        doc: impl AsRef<str>,
-        split_pattern: &Regex,
-        special_split_pattern: Option<&Regex>,
-    ) -> Vec<TrainingChunk> {
-        let doc = doc.as_ref();
-        let mut chunks = Vec::new();
-        let mut cursor = 0;
-
-        if let Some(special_split_pattern) = special_split_pattern {
-            for matched in special_split_pattern
-                .find_iter(doc)
-                .map(|matched| matched.expect("special token regex evaluation should succeed"))
-            {
-                chunks.extend(
-                    split_pattern
-                        .find_iter(&doc[cursor..matched.start()])
-                        .map(|matched| matched.expect("split regex evaluation should succeed"))
-                        .map(|matched| TrainingChunk::from_slice(matched.as_str().as_bytes())),
-                );
-                cursor = matched.end();
-            }
-        }
-        chunks.extend(
-            split_pattern
-                .find_iter(&doc[cursor..])
-                .map(|matched| matched.expect("split regex evaluation should succeed"))
-                .map(|matched| TrainingChunk::from_slice(matched.as_str().as_bytes())),
-        );
-        chunks
-    }
-
     /// Parallel fold+reduce over all docs, producing byte-chunk frequencies without allocating
     /// duplicate chains for repeated chunks.
     fn build_training_chains(
         &self,
         docs: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Vec<WeightedChain> {
+        #[inline]
+        fn count_chunk(
+            counts: &mut HbHashMap<TrainingChunk, u32, AHashRandomState>,
+            chunk_bytes: &[u8],
+        ) {
+            match counts.entry_ref(chunk_bytes) {
+                EntryRef::Occupied(mut entry) => {
+                    *entry.get_mut() += 1;
+                }
+                EntryRef::Vacant(entry) => {
+                    entry.insert(1);
+                }
+            }
+        }
+
         let docs: Vec<String> = docs
             .into_iter()
             .map(|doc| doc.as_ref().to_owned())
@@ -165,7 +149,7 @@ impl BPE {
             .fold(
                 || {
                     (
-                        AHashMap::<TrainingChunk, u32>::new(),
+                        HbHashMap::<TrainingChunk, u32, AHashRandomState>::default(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -175,12 +159,26 @@ impl BPE {
                     )
                 },
                 |(mut local_counts, split_pattern, special_split_pattern), doc| {
-                    for chunk in Self::split_for_training_bytes_with_patterns(
-                        doc,
-                        &split_pattern,
-                        special_split_pattern.as_ref(),
-                    ) {
-                        *local_counts.entry(chunk).or_default() += 1;
+                    let mut cursor = 0usize;
+                    if let Some(special_split_pattern) = special_split_pattern.as_ref() {
+                        for matched in special_split_pattern.find_iter(doc).map(|matched| {
+                            matched.expect("special token regex evaluation should succeed")
+                        }) {
+                            for chunk_match in split_pattern
+                                .find_iter(&doc[cursor..matched.start()])
+                                .map(|chunk_match| {
+                                    chunk_match.expect("split regex evaluation should succeed")
+                                })
+                            {
+                                count_chunk(&mut local_counts, chunk_match.as_str().as_bytes());
+                            }
+                            cursor = matched.end();
+                        }
+                    }
+                    for chunk_match in split_pattern.find_iter(&doc[cursor..]).map(|chunk_match| {
+                        chunk_match.expect("split regex evaluation should succeed")
+                    }) {
+                        count_chunk(&mut local_counts, chunk_match.as_str().as_bytes());
                     }
                     (local_counts, split_pattern, special_split_pattern)
                 },
@@ -188,7 +186,7 @@ impl BPE {
             .reduce(
                 || {
                     (
-                        AHashMap::<TrainingChunk, u32>::new(),
+                        HbHashMap::<TrainingChunk, u32, AHashRandomState>::default(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -752,11 +750,16 @@ mod tests {
         let special_split_pattern = bpe.special_split_pattern_source.as_ref().map(|pattern| {
             Regex::new(pattern).expect("special token regex source should remain valid")
         });
-        BPE::split_for_training_bytes_with_patterns(
-            doc,
-            &split_pattern,
-            special_split_pattern.as_ref(),
-        )
+        let mut chunks = Vec::new();
+        BPE::for_each_segment_between_specials(doc, special_split_pattern.as_ref(), |segment| {
+            if let Segment::Regular(segment) = segment {
+                chunks.extend(
+                    BPE::split_matches(&split_pattern, segment)
+                        .map(|matched| TrainingChunk::from_slice(matched.as_bytes())),
+                );
+            }
+        });
+        chunks
     }
 
     #[test]
