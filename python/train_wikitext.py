@@ -1,4 +1,4 @@
-"""Train fast_bpe_rs on WikiText-103 with Hugging Face datasets."""
+"""Train fast_bpe_rs on WikiText with Hugging Face datasets."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from datasets import load_dataset
 from fast_bpe_rs import BPE
 
 DATASET_REPO = "Salesforce/wikitext"
-DATASET_CONFIG = "wikitext-103-raw-v1"
+DEFAULT_DATASET_CONFIG = "wikitext-103-raw-v1"
+SUPPORTED_DATASET_CONFIGS = ("wikitext-103-raw-v1", "wikitext-2-raw-v1")
 DATASET_SPLIT = "train"
 DEFAULT_TARGET_VOCAB_SIZE = 1 << 15
 DEFAULT_RUNS = 3
@@ -32,6 +33,15 @@ def parse_args() -> argparse.Namespace:
         description="Train fast_bpe_rs on the WikiText train split and print timing."
     )
     parser.add_argument(
+        "--dataset-config",
+        choices=SUPPORTED_DATASET_CONFIGS,
+        default=DEFAULT_DATASET_CONFIG,
+        help=(
+            "WikiText dataset config to train on "
+            f"(default: {DEFAULT_DATASET_CONFIG})."
+        ),
+    )
+    parser.add_argument(
         "--target-vocab-size",
         type=positive_int,
         default=DEFAULT_TARGET_VOCAB_SIZE,
@@ -49,21 +59,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_wikitext_train_docs() -> list[str]:
-    dataset = load_dataset(DATASET_REPO, DATASET_CONFIG, split=DATASET_SPLIT)
+def load_wikitext_train_docs(dataset_config: str) -> tuple[list[str], int]:
+    dataset = load_dataset(DATASET_REPO, dataset_config, split=DATASET_SPLIT)
+    total_rows = len(dataset)
     docs = [text.strip() for text in dataset["text"] if text and text.strip()]
-    return docs
+    return docs, total_rows
 
 
 def main() -> None:
     args = parse_args()
-    docs = load_wikitext_train_docs()
+    docs, total_rows = load_wikitext_train_docs(args.dataset_config)
     print(
         "RUN_CONTEXT "
         f"dataset_repo={DATASET_REPO} "
-        f"dataset_config={DATASET_CONFIG} "
+        f"dataset_config={args.dataset_config} "
         f"dataset_split={DATASET_SPLIT} "
+        f"split_rows={total_rows} "
         f"docs_loaded={len(docs)} "
+        f"rows_filtered_out={total_rows - len(docs)} "
         f"target_vocab_size={args.target_vocab_size} "
         f"runs={args.runs}"
     )
