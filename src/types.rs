@@ -1,3 +1,5 @@
+use smallvec::SmallVec;
+
 /// Size of the immutable byte-level vocabulary (`0..=255`).
 pub(crate) const BASE_VOCAB_SIZE: u32 = 256;
 
@@ -13,3 +15,5 @@ pub(crate) type ChainIndex = usize;
 pub(crate) type PairLocations = rustc_hash::FxHashSet<(ChainIndex, NodePos)>;
 /// Fast hash map used for pair-keyed training indexes.
 pub(crate) type SeedMap<V> = rustc_hash::FxHashMap<TokenIdPair, V>;
+/// Byte chunk representation used while splitting and aggregating training corpora.
+pub(crate) type TrainingChunk = SmallVec<[u8; 32]>;
