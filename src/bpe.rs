@@ -1,4 +1,5 @@
 use crate::error::BPEError;
+use crate::merge_candidate_buckets::MergeCandidateBuckets;
 use crate::merge_sequence::MergeSequence;
 use crate::types::{
     BASE_VOCAB_SIZE, MergeNodeSlot, MergeSequenceIndex, SeedMap, TokenId, TokenIdPair,
@@ -8,7 +9,7 @@ use ahash::RandomState as AHashRandomState;
 use fancy_regex::{Regex, escape};
 use hashbrown::{HashMap as HbHashMap, hash_map::EntryRef};
 use rayon::prelude::*;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::collections::{HashMap, HashSet};
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
@@ -73,19 +74,18 @@ pub struct BPE {
     // Training-time index structures.
     //
     // `merge_sequences` stores each unique training chunk once with its corpus multiplicity.
-    // `token_id_pair_info` + `count_to_token_id_pairs` form a bidirectional index:
+    // `token_id_pair_info` + `merge_candidate_buckets` form a bidirectional index:
     //
     //   token-id pair ----------------------> metadata
     //   (A,B)       token_id_pair_info[(A,B)] = {count, locations}
     //
     //   count -----------------------------> set of token-id pairs at that count
-    //   17          count_to_token_id_pairs[17] = {(A,B), (C,D), ...}
+    //   17          merge_candidate_buckets bucket(17) = {(A,B), (C,D), ...}
     //
-    // `max_token_id_pair_count` points to the highest non-empty count bucket, so selecting the current
-    // best merge is an O(1)-expected bucket lookup plus tie-break in that bucket.
+    // `merge_candidate_buckets` keeps frequency buckets linked in descending count order, so selecting
+    // the current best candidate is O(1) for highest-bucket lookup plus tie-break inside that bucket.
     merge_sequences: Vec<WeightedMergeSequence>,
-    count_to_token_id_pairs: FxHashMap<u32, FxHashSet<TokenIdPair>>, // frequency -> token-id pairs
-    max_token_id_pair_count: u32, // largest non-empty frequency bucket
+    merge_candidate_buckets: MergeCandidateBuckets,
     token_id_pair_info: FxHashMap<TokenIdPair, TokenIdPairInfo>, // token-id pair -> {frequency, (merge_sequence_idx, node_pos)}
 }
 
@@ -230,7 +230,7 @@ impl BPE {
 
     /// Counts every adjacent token-id pair in parallel and records all left-node locations.
     ///
-    /// The resulting map is used to seed `token_id_pair_info` and `count_to_token_id_pairs` in one
+    /// The resulting map is used to seed `token_id_pair_info` and `merge_candidate_buckets` in one
     /// pass with one bucket insertion per unique token-id pair.
     fn build_initial_token_id_pair_stats(
         merge_sequences: &[WeightedMergeSequence],
@@ -333,8 +333,7 @@ impl BPE {
             vocab,
             merge_map: HashMap::new(),
             merge_sequences: Vec::new(),
-            count_to_token_id_pairs: FxHashMap::default(),
-            max_token_id_pair_count: 0,
+            merge_candidate_buckets: MergeCandidateBuckets::default(),
             token_id_pair_info: FxHashMap::default(),
         })
     }
@@ -377,13 +376,10 @@ impl BPE {
     ///   |
     ///   +--> old_count bucket: remove token_id_pair
     ///   |
-    ///   +--> if new_count == 0:
-    ///   |      delete token_id_pair_info entry
-    ///   |      shrink max_token_id_pair_count downward if needed
+    ///   +--> notify merge_candidate_buckets of (old_count -> new_count)
     ///   |
-    ///   +--> else:
-    ///          insert token_id_pair into count_to_token_id_pairs[new_count]
-    ///          raise max_token_id_pair_count if new bucket is higher
+    ///   +--> if new_count == 0:
+    ///          delete token_id_pair_info entry
     /// ```
     ///
     /// Keeping both directions synchronized prevents stale bucket membership and ensures the
@@ -419,44 +415,19 @@ impl BPE {
             (old_count, new_count)
         };
 
-        if old_count > 0 {
-            let bucket = self
-                .count_to_token_id_pairs
-                .get_mut(&old_count)
-                .expect("existing token-id pair count bucket must exist");
-            bucket.remove(&token_id_pair);
-            if self.max_token_id_pair_count == old_count && bucket.is_empty() {
-                while self.max_token_id_pair_count > 0
-                    && self
-                        .count_to_token_id_pairs
-                        .get(&self.max_token_id_pair_count)
-                        .is_none_or(FxHashSet::is_empty)
-                {
-                    self.max_token_id_pair_count -= 1;
-                }
-            }
-        }
+        self.merge_candidate_buckets
+            .update_token_id_pair(token_id_pair, old_count, new_count);
 
         if new_count == 0 {
             self.token_id_pair_info.remove(&token_id_pair);
-            return;
         }
-
-        self.count_to_token_id_pairs
-            .entry(new_count)
-            .or_default()
-            .insert(token_id_pair);
-        self.max_token_id_pair_count = self.max_token_id_pair_count.max(new_count);
     }
 
     /// Returns the current best merge candidate:
     /// - highest observed frequency bucket
     /// - deterministic tie-break by `(left_id, right_id)` order.
     fn best_token_id_pair(&self) -> Option<TokenIdPair> {
-        self.count_to_token_id_pairs
-            .get(&self.max_token_id_pair_count)
-            .and_then(|bucket| bucket.iter().min())
-            .copied()
+        self.merge_candidate_buckets.best_token_id_pair()
     }
 
     fn register_merged_token(&mut self, merged_id: TokenId, token_id_pair: TokenIdPair) {
@@ -480,19 +451,11 @@ impl BPE {
             .unwrap_or_default();
 
         if let Some(token_id_pair_info) = removed_token_id_pair_info {
-            debug_assert_eq!(token_id_pair_info.count, self.max_token_id_pair_count);
-            self.count_to_token_id_pairs
-                .entry(self.max_token_id_pair_count)
-                .or_default()
-                .remove(&token_id_pair);
-            while self.max_token_id_pair_count > 0
-                && self
-                    .count_to_token_id_pairs
-                    .get(&self.max_token_id_pair_count)
-                    .is_none_or(FxHashSet::is_empty)
-            {
-                self.max_token_id_pair_count -= 1;
-            }
+            self.merge_candidate_buckets.update_token_id_pair(
+                token_id_pair,
+                token_id_pair_info.count,
+                0,
+            );
         }
 
         token_id_pair_occurrences
@@ -581,12 +544,12 @@ impl BPE {
     ///      v
     /// [3] build initial token-id-pair stats
     ///      token_id_pair_info[(L,R)] = {weighted_count, all left-node locations}
-    ///      count_to_token_id_pairs[count] += (L,R)
+    ///      merge_candidate_buckets.insert(count, (L,R))
     ///      |
     ///      v
     /// [4] for merged_id in vocabulary-growth order (skipping reserved special-token ids):
     ///      |
-    ///      +--> select best_token_id_pair from count_to_token_id_pairs[max_token_id_pair_count]
+    ///      +--> select best_token_id_pair from merge_candidate_buckets
     ///      |      (deterministic tie break by lexical token-id-pair order)
     ///      |
     ///      +--> vocab[merged_id] = vocab[left] ++ vocab[right]
@@ -628,11 +591,6 @@ impl BPE {
             self.token_id_pair_info
                 .reserve(initial_token_id_pair_stats.len());
 
-            self.max_token_id_pair_count = initial_token_id_pair_stats
-                .values()
-                .map(|(count, _)| *count)
-                .max()
-                .unwrap_or_default();
             for (token_id_pair, (count, occurrences)) in initial_token_id_pair_stats {
                 self.token_id_pair_info.insert(
                     token_id_pair,
@@ -641,10 +599,7 @@ impl BPE {
                         occurrences: occurrences.into_iter().collect(),
                     },
                 );
-                self.count_to_token_id_pairs
-                    .entry(count)
-                    .or_default()
-                    .insert(token_id_pair);
+                self.merge_candidate_buckets.insert(count, token_id_pair);
             }
         }
 
@@ -781,8 +736,7 @@ impl BPE {
         });
         self.merge_map.clear();
         self.merge_sequences.clear();
-        self.count_to_token_id_pairs.clear();
-        self.max_token_id_pair_count = 0;
+        self.merge_candidate_buckets.clear();
         self.token_id_pair_info.clear();
     }
 }
@@ -908,7 +862,7 @@ mod tests {
         assert_eq!(bpe.decode(vec![999_999]), Vec::<u8>::new());
         assert!(bpe.merge_map.is_empty());
         assert!(bpe.merge_sequences.is_empty());
-        assert!(bpe.count_to_token_id_pairs.is_empty());
+        assert!(bpe.merge_candidate_buckets.is_empty());
         assert!(bpe.token_id_pair_info.is_empty());
     }
 
