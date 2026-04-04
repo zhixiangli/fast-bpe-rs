@@ -37,8 +37,7 @@ def parse_args() -> argparse.Namespace:
         choices=SUPPORTED_DATASET_CONFIGS,
         default=DEFAULT_DATASET_CONFIG,
         help=(
-            "WikiText dataset config to train on "
-            f"(default: {DEFAULT_DATASET_CONFIG})."
+            f"WikiText dataset config to train on (default: {DEFAULT_DATASET_CONFIG})."
         ),
     )
     parser.add_argument(
