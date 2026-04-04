@@ -3,9 +3,13 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 #[derive(Debug, Clone)]
 struct MergeCandidateBucketNode {
+    /// Frequency represented by this bucket.
     count: u32,
+    /// All token-id pairs currently observed exactly `count` times.
     token_id_pairs: FxHashSet<TokenIdPair>,
+    /// Previous (higher-frequency) non-empty bucket.
     prev: Option<usize>,
+    /// Next (lower-frequency) non-empty bucket.
     next: Option<usize>,
 }
 
@@ -21,6 +25,7 @@ pub(crate) struct MergeCandidateBuckets {
 }
 
 impl MergeCandidateBuckets {
+    /// Clears all buckets and internal node indexes.
     pub(crate) fn clear(&mut self) {
         self.nodes.clear();
         self.free_nodes.clear();
@@ -33,11 +38,13 @@ impl MergeCandidateBuckets {
         self.head.is_none()
     }
 
+    /// Returns the lexicographically-smallest pair in the highest-frequency bucket.
     pub(crate) fn best_token_id_pair(&self) -> Option<TokenIdPair> {
         let head = self.head?;
         self.node(head).token_id_pairs.iter().min().copied()
     }
 
+    /// Adds a pair to the given frequency bucket, creating the bucket if needed.
     pub(crate) fn insert(&mut self, count: u32, token_id_pair: TokenIdPair) {
         debug_assert!(count > 0, "count buckets must be positive");
         let node_index = self.ensure_bucket(count);
@@ -46,6 +53,9 @@ impl MergeCandidateBuckets {
             .insert(token_id_pair);
     }
 
+    /// Moves a pair from `old_count` to `new_count`.
+    ///
+    /// A zero count means "not present in buckets".
     pub(crate) fn update_token_id_pair(
         &mut self,
         token_id_pair: TokenIdPair,
@@ -60,18 +70,21 @@ impl MergeCandidateBuckets {
         }
     }
 
+    /// Returns an immutable reference to a bucket node by slab index.
     fn node(&self, index: usize) -> &MergeCandidateBucketNode {
         self.nodes[index]
             .as_ref()
             .expect("merge-candidate bucket node must exist")
     }
 
+    /// Returns a mutable reference to a bucket node by slab index.
     fn node_mut(&mut self, index: usize) -> &mut MergeCandidateBucketNode {
         self.nodes[index]
             .as_mut()
             .expect("merge-candidate bucket node must exist")
     }
 
+    /// Allocates a new bucket node, reusing a previously-freed slab slot when possible.
     fn allocate_node(&mut self, count: u32) -> usize {
         let node = MergeCandidateBucketNode {
             count,
@@ -89,6 +102,7 @@ impl MergeCandidateBuckets {
         }
     }
 
+    /// Ensures a bucket for `count` exists and is linked in descending count order.
     fn ensure_bucket(&mut self, count: u32) -> usize {
         if let Some(&existing) = self.count_to_node.get(&count) {
             return existing;
@@ -127,6 +141,7 @@ impl MergeCandidateBuckets {
         new_index
     }
 
+    /// Removes a pair from `count`, unlinking and recycling the bucket if it becomes empty.
     fn remove_from_bucket(&mut self, count: u32, token_id_pair: TokenIdPair) {
         let node_index = *self
             .count_to_node
