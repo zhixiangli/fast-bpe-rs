@@ -27,6 +27,11 @@ struct TokenIdPairInfo {
     occurrences: TokenIdPairOccurrences,
 }
 
+#[derive(Debug, Default)]
+struct BucketUpdateBatch {
+    original_counts: FxHashMap<TokenIdPair, u32>,
+}
+
 enum Segment<'a> {
     Regular(&'a str),
     Special(&'a str),
@@ -392,6 +397,7 @@ impl BPE {
         merge_sequence_index: MergeSequenceIndex,
         pos: MergeNodeSlot,
         delta: i64,
+        bucket_update_batch: &mut BucketUpdateBatch,
     ) {
         let (old_count, new_count) = {
             let token_id_pair_info = self.token_id_pair_info.entry(token_id_pair).or_default();
@@ -417,11 +423,25 @@ impl BPE {
             (old_count, new_count)
         };
 
-        self.merge_candidate_buckets
-            .update_token_id_pair(token_id_pair, old_count, new_count);
+        bucket_update_batch
+            .original_counts
+            .entry(token_id_pair)
+            .or_insert(old_count);
 
         if new_count == 0 {
             self.token_id_pair_info.remove(&token_id_pair);
+        }
+    }
+
+    fn flush_bucket_updates(&mut self, bucket_update_batch: BucketUpdateBatch) {
+        for (token_id_pair, old_count) in bucket_update_batch.original_counts {
+            let new_count = self
+                .token_id_pair_info
+                .get(&token_id_pair)
+                .map(|token_id_pair_info| token_id_pair_info.count)
+                .unwrap_or(0);
+            self.merge_candidate_buckets
+                .update_token_id_pair(token_id_pair, old_count, new_count);
         }
     }
 
@@ -470,6 +490,7 @@ impl BPE {
         merged_id: TokenId,
         merge_sequence_index: MergeSequenceIndex,
         left_slot: MergeNodeSlot,
+        bucket_update_batch: &mut BucketUpdateBatch,
     ) {
         let frequency = i64::from(merge_sequences[merge_sequence_index].frequency);
         let Some(left_node) =
@@ -509,25 +530,39 @@ impl BPE {
         if let (Some(prev_id), Some(prev_slot)) = (prev_id, prev) {
             let left_neighbor = (prev_id, token_id_pair.0);
             if left_neighbor != token_id_pair {
-                self.adjust(left_neighbor, merge_sequence_index, prev_slot, -frequency);
+                self.adjust(
+                    left_neighbor,
+                    merge_sequence_index,
+                    prev_slot,
+                    -frequency,
+                    bucket_update_batch,
+                );
             }
             self.adjust(
                 (prev_id, merged_id),
                 merge_sequence_index,
                 prev_slot,
                 frequency,
+                bucket_update_batch,
             );
         }
         if let Some(next_id) = next_id {
             let right_neighbor = (token_id_pair.1, next_id);
             if right_neighbor != token_id_pair {
-                self.adjust(right_neighbor, merge_sequence_index, right_slot, -frequency);
+                self.adjust(
+                    right_neighbor,
+                    merge_sequence_index,
+                    right_slot,
+                    -frequency,
+                    bucket_update_batch,
+                );
             }
             self.adjust(
                 (merged_id, next_id),
                 merge_sequence_index,
                 new_slot,
                 frequency,
+                bucket_update_batch,
             );
         }
     }
@@ -633,6 +668,7 @@ impl BPE {
             self.register_merged_token(merged_id, best_token_id_pair);
             let best_token_id_pair_occurrences =
                 self.take_token_id_pair_occurrences(best_token_id_pair);
+            let mut bucket_update_batch = BucketUpdateBatch::default();
 
             for (merge_sequence_index, left_slot) in best_token_id_pair_occurrences {
                 self.apply_token_id_pair_merge_at(
@@ -641,8 +677,10 @@ impl BPE {
                     merged_id,
                     merge_sequence_index,
                     left_slot,
+                    &mut bucket_update_batch,
                 );
             }
+            self.flush_bucket_updates(bucket_update_batch);
         }
 
         self.merge_sequences = merge_sequences;
