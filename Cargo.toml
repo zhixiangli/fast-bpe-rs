@@ -21,6 +21,7 @@ hashbrown = "0.16.0"
 rustc-hash = "2.1.2"
 log = "0.4.29"
 pyo3-log = "0.13.3"
+mimalloc = { version = "0.1.46", default-features = false }
 
 [profile.release]
 lto = "fat"
