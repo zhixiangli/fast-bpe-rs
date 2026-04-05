@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.2...v0.4.3) (2026-04-05)
+
+
+### Performance Improvements
+
+* switch training chunk map to FxHasher ([#130](https://github.com/zhixiangli/fast-bpe-rs/issues/130)) ([d1df0bd](https://github.com/zhixiangli/fast-bpe-rs/commit/d1df0bdf35eb54dfa1d2e1860e17c11e35b5d245))
+
 ## [0.4.2](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.1...v0.4.2) (2026-04-05)
 
 
