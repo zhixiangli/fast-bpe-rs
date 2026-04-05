@@ -11,7 +11,11 @@ pub use crate::bpe::BPE;
 pub use crate::error::BPEError;
 pub use crate::python::PyBPE;
 
+use mimalloc::MiMalloc;
 use pyo3::prelude::*;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 /// Registers the `fast_bpe_rs` Python module and exposes the `BPE` class.
 #[pymodule]
