@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.3.4...v0.4.0) (2026-04-04)
+
+
+### Features
+
+* add selectable WikiText dataset config and report filtered rows in training script ([#121](https://github.com/zhixiangli/fast-bpe-rs/issues/121)) ([5aa3abd](https://github.com/zhixiangli/fast-bpe-rs/commit/5aa3abd9d11333d4544873e5cb437718d3a4a7d2))
+
 ## [0.3.4](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.3.3...v0.3.4) (2026-04-04)
 
 
