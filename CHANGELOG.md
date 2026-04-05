@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.5.0...v0.5.1) (2026-04-05)
+
+
+### Performance Improvements
+
+* reduce Python-to-Rust training overhead in PyO3 wrapper ([#138](https://github.com/zhixiangli/fast-bpe-rs/issues/138)) ([3b89b18](https://github.com/zhixiangli/fast-bpe-rs/commit/3b89b18bd2b4f04d4e3611dd5215ca4cba279671))
+
 ## [0.5.0](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.5...v0.5.0) (2026-04-05)
 
 
