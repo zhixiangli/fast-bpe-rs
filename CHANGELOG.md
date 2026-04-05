@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.5.1...v0.5.2) (2026-04-05)
+
+
+### Performance Improvements
+
+* use mimalloc as global allocator ([#140](https://github.com/zhixiangli/fast-bpe-rs/issues/140)) ([1935af9](https://github.com/zhixiangli/fast-bpe-rs/commit/1935af974f9ed406b5d7a51b0ae8f5cbaec5cda8))
+
 ## [0.5.1](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.5.0...v0.5.1) (2026-04-05)
 
 
