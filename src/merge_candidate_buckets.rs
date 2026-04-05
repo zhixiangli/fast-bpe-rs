@@ -1,10 +1,9 @@
 use crate::types::TokenIdPair;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone)]
 struct MergeCandidateBucketNode {
-    /// Frequency represented by this bucket.
-    count: u32,
     /// All token-id pairs currently observed exactly `count` times.
     token_id_pairs: FxHashSet<TokenIdPair>,
     /// Previous (higher-frequency) non-empty bucket.
@@ -21,6 +20,7 @@ pub(crate) struct MergeCandidateBuckets {
     nodes: Vec<Option<MergeCandidateBucketNode>>,
     free_nodes: Vec<usize>,
     count_to_node: FxHashMap<u32, usize>,
+    sorted_counts: BTreeSet<u32>,
     head: Option<usize>,
 }
 
@@ -30,6 +30,7 @@ impl MergeCandidateBuckets {
         self.nodes.clear();
         self.free_nodes.clear();
         self.count_to_node.clear();
+        self.sorted_counts.clear();
         self.head = None;
     }
 
@@ -85,9 +86,8 @@ impl MergeCandidateBuckets {
     }
 
     /// Allocates a new bucket node, reusing a previously-freed slab slot when possible.
-    fn allocate_node(&mut self, count: u32) -> usize {
+    fn allocate_node(&mut self) -> usize {
         let node = MergeCandidateBucketNode {
-            count,
             token_id_pairs: FxHashSet::default(),
             prev: None,
             next: None,
@@ -103,37 +103,39 @@ impl MergeCandidateBuckets {
     }
 
     /// Ensures a bucket for `count` exists and is linked in descending count order.
+    ///
+    /// Complexity:
+    /// - O(1) when the bucket already exists (hash-map lookup).
+    /// - O(log k) when creating a new bucket, where `k` is the number of
+    ///   non-empty buckets, by using an ordered set to find adjacent counts.
     fn ensure_bucket(&mut self, count: u32) -> usize {
         if let Some(&existing) = self.count_to_node.get(&count) {
             return existing;
         }
 
-        let new_index = self.allocate_node(count);
+        let new_index = self.allocate_node();
         self.count_to_node.insert(count, new_index);
+        self.sorted_counts.insert(count);
 
-        let Some(mut current) = self.head else {
-            self.head = Some(new_index);
-            return new_index;
-        };
+        let prev = self
+            .sorted_counts
+            .range((std::ops::Bound::Excluded(count), std::ops::Bound::Unbounded))
+            .next()
+            .and_then(|adjacent_count| self.count_to_node.get(adjacent_count).copied());
+        let next = self
+            .sorted_counts
+            .range((std::ops::Bound::Unbounded, std::ops::Bound::Excluded(count)))
+            .next_back()
+            .and_then(|adjacent_count| self.count_to_node.get(adjacent_count).copied());
 
-        if self.node(current).count < count {
-            self.node_mut(current).prev = Some(new_index);
-            self.node_mut(new_index).next = Some(current);
-            self.head = Some(new_index);
-            return new_index;
-        }
-
-        while let Some(next) = self.node(current).next {
-            if self.node(next).count < count {
-                break;
-            }
-            current = next;
-        }
-
-        let next = self.node(current).next;
-        self.node_mut(new_index).prev = Some(current);
+        self.node_mut(new_index).prev = prev;
         self.node_mut(new_index).next = next;
-        self.node_mut(current).next = Some(new_index);
+
+        if let Some(prev) = prev {
+            self.node_mut(prev).next = Some(new_index);
+        } else {
+            self.head = Some(new_index);
+        }
         if let Some(next) = next {
             self.node_mut(next).prev = Some(new_index);
         }
@@ -172,6 +174,7 @@ impl MergeCandidateBuckets {
         }
 
         self.count_to_node.remove(&count);
+        self.sorted_counts.remove(&count);
         self.nodes[node_index] = None;
         self.free_nodes.push(node_index);
     }
