@@ -11,7 +11,7 @@ use hashbrown::{HashMap as HbHashMap, hash_map::EntryRef};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
 #[derive(Debug)]
@@ -66,11 +66,11 @@ pub struct BPE {
     /// Source pattern used to build worker-local special-token regexes.
     special_split_pattern_source: Option<String>,
     /// Mapping from literal special-token text to the externally-visible token id.
-    special_tokens: HashMap<String, TokenId>,
+    special_tokens: FxHashMap<String, TokenId>,
     /// Vocabulary entries materialized as raw bytes for decode/inspection.
-    pub(crate) vocab: HashMap<TokenId, Vec<u8>>, // id -> bytes
+    pub(crate) vocab: FxHashMap<TokenId, Vec<u8>>, // id -> bytes
     /// Learned merge rules keyed by `(left, right)` token pairs.
-    pub(crate) merge_map: HashMap<TokenIdPair, TokenId>, // token-id pair -> merged id
+    pub(crate) merge_map: FxHashMap<TokenIdPair, TokenId>, // token-id pair -> merged id
 
     // Training-time index structures.
     //
@@ -299,10 +299,10 @@ impl BPE {
             .unwrap_or(Self::DEFAULT_SPLIT_PATTERN)
             .to_owned();
         Regex::new(&split_pattern_source).map_err(BPEError::from)?;
-        let mut vocab: HashMap<TokenId, Vec<u8>> = (0..BASE_VOCAB_SIZE)
+        let mut vocab: FxHashMap<TokenId, Vec<u8>> = (0..BASE_VOCAB_SIZE)
             .map(|byte| (byte, vec![byte as u8]))
             .collect();
-        let mut special_token_map = HashMap::new();
+        let mut special_token_map = FxHashMap::default();
         let mut used_special_ids = HashSet::new();
 
         for (token, token_id) in special_tokens
@@ -333,7 +333,7 @@ impl BPE {
             special_split_pattern_source,
             special_tokens: special_token_map,
             vocab,
-            merge_map: HashMap::new(),
+            merge_map: FxHashMap::default(),
             merge_sequences: Vec::new(),
             merge_candidate_buckets: MergeCandidateBuckets::default(),
             token_id_pair_info: FxHashMap::default(),
@@ -344,7 +344,7 @@ impl BPE {
     ///
     /// Ordering by length prevents a short token like `<e>` from stealing the prefix of a longer
     /// token like `<eos>`.
-    fn build_special_token_pattern(special_tokens: &HashMap<String, TokenId>) -> Option<String> {
+    fn build_special_token_pattern(special_tokens: &FxHashMap<String, TokenId>) -> Option<String> {
         if special_tokens.is_empty() {
             return None;
         }
@@ -586,6 +586,20 @@ impl BPE {
         docs: impl IntoIterator<Item = impl Into<Cow<'a, str>>>,
     ) {
         self.reset_training_state();
+        let target_vocab_size = vocab_size as usize;
+        if target_vocab_size > self.vocab.len() {
+            self.vocab.reserve(target_vocab_size - self.vocab.len());
+        }
+
+        let reserved_ids: HashSet<_> = self.special_tokens.values().copied().collect();
+        let target_merge_capacity = (BASE_VOCAB_SIZE..vocab_size)
+            .filter(|token_id| !reserved_ids.contains(token_id))
+            .count();
+        if target_merge_capacity > self.merge_map.len() {
+            self.merge_map
+                .reserve(target_merge_capacity - self.merge_map.len());
+        }
+
         self.merge_sequences = self.build_training_merge_sequences(docs);
 
         // Take ownership so we can mutate merge_sequences freely while still updating `self`'s indexes.
@@ -609,7 +623,6 @@ impl BPE {
             }
         }
 
-        let reserved_ids: HashSet<_> = self.special_tokens.values().copied().collect();
         for merged_id in
             (BASE_VOCAB_SIZE..vocab_size).filter(|token_id| !reserved_ids.contains(token_id))
         {
