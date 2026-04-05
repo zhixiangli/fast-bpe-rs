@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.5.0](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.5...v0.5.0) (2026-04-05)
+
+
+### Features
+
+* add default fancy-regex split pattern ([#84](https://github.com/zhixiangli/fast-bpe-rs/issues/84)) ([ddf4d60](https://github.com/zhixiangli/fast-bpe-rs/commit/ddf4d60f74af5f3409aabe95660fd93e64f35399))
+* add selectable WikiText dataset config and report filtered rows in training script ([#121](https://github.com/zhixiangli/fast-bpe-rs/issues/121)) ([5aa3abd](https://github.com/zhixiangli/fast-bpe-rs/commit/5aa3abd9d11333d4544873e5cb437718d3a4a7d2))
+* **cli:** add flag to load wikitext-2 dataset ([#92](https://github.com/zhixiangli/fast-bpe-rs/issues/92)) ([e629ebd](https://github.com/zhixiangli/fast-bpe-rs/commit/e629ebd00568650dab9222caabb2b34ed42c4709))
+
+
+### Bug Fixes
+
+* **ci:** set repo for release uploads ([#61](https://github.com/zhixiangli/fast-bpe-rs/issues/61)) ([9057c15](https://github.com/zhixiangli/fast-bpe-rs/commit/9057c153e847f01bce4d18dc6e3940f6b06e3bcd))
+* handle invalid split regex in python bindings ([#7](https://github.com/zhixiangli/fast-bpe-rs/issues/7)) ([151d0c1](https://github.com/zhixiangli/fast-bpe-rs/commit/151d0c17c1f40d127cb74dd7de69fe2324603a4b))
+* normalize python unicode decode errors ([#9](https://github.com/zhixiangli/fast-bpe-rs/issues/9)) ([0d4c063](https://github.com/zhixiangli/fast-bpe-rs/commit/0d4c063080ade3919c12823d32529371f4da240b))
+* prevent duplicate release PRs by removing draft release config ([#42](https://github.com/zhixiangli/fast-bpe-rs/issues/42)) ([b5c0987](https://github.com/zhixiangli/fast-bpe-rs/commit/b5c098713c2d156687ad800ba61bd53e1342a489))
+* resolve merge conflict in training benchmark binary ([#91](https://github.com/zhixiangli/fast-bpe-rs/issues/91)) ([bf70ad5](https://github.com/zhixiangli/fast-bpe-rs/commit/bf70ad5410d3e0ee376b5c769d19ed0a4b36bfe2))
+* restore full release flow for manual reruns ([#58](https://github.com/zhixiangli/fast-bpe-rs/issues/58)) ([059bbe2](https://github.com/zhixiangli/fast-bpe-rs/commit/059bbe29eb20aa3448ab731915be8c007b9ea1f5))
+* route WikiText training logs to stdout ([#135](https://github.com/zhixiangli/fast-bpe-rs/issues/135)) ([06d3bee](https://github.com/zhixiangli/fast-bpe-rs/commit/06d3bee239272a34b193d500dbd38933d1c44364))
+* set release to draft before uploading assets on retry ([#37](https://github.com/zhixiangli/fast-bpe-rs/issues/37)) ([3d45a36](https://github.com/zhixiangli/fast-bpe-rs/commit/3d45a36790160494e6fe951ab6dde99bcbf18927))
+
+
+### Performance Improvements
+
+* batch merge-candidate bucket updates per selected merge ([#133](https://github.com/zhixiangli/fast-bpe-rs/issues/133)) ([878d714](https://github.com/zhixiangli/fast-bpe-rs/commit/878d714dcec297d82eaa42ed4763dce9d08e4733))
+* **ci:** speed up package checks job ([#94](https://github.com/zhixiangli/fast-bpe-rs/issues/94)) ([1a4b522](https://github.com/zhixiangli/fast-bpe-rs/commit/1a4b5222b224fa7925060e7c0b249c9f11065543))
+* compile worker-local regexes during training chain build ([#106](https://github.com/zhixiangli/fast-bpe-rs/issues/106)) ([62fad02](https://github.com/zhixiangli/fast-bpe-rs/commit/62fad0209a3d083198ae9c7f7f14ff99b176ece3))
+* expand memory benchmark stats output ([#95](https://github.com/zhixiangli/fast-bpe-rs/issues/95)) ([36893da](https://github.com/zhixiangli/fast-bpe-rs/commit/36893dad16111da4918217e048a13054bb1b3205))
+* introduce `TrainingChunk` alias and widen SmallVec capacity for training data ([#108](https://github.com/zhixiangli/fast-bpe-rs/issues/108)) ([012343b](https://github.com/zhixiangli/fast-bpe-rs/commit/012343b1089383eef02bede96e135f9694433914))
+* log BPE training duration at info level ([#126](https://github.com/zhixiangli/fast-bpe-rs/issues/126)) ([d8ad9b6](https://github.com/zhixiangli/fast-bpe-rs/commit/d8ad9b62cba655cb48fc6bb4c054161e996c2b45))
+* make ensure_bucket logarithmic with ordered counts ([#127](https://github.com/zhixiangli/fast-bpe-rs/issues/127)) ([839f059](https://github.com/zhixiangli/fast-bpe-rs/commit/839f059113e41dce8de75e226624d13cf04630db))
+* optimize training chunk frequency map lookups ([#110](https://github.com/zhixiangli/fast-bpe-rs/issues/110)) ([bc711e4](https://github.com/zhixiangli/fast-bpe-rs/commit/bc711e4daca56d91d3a042d4cd7b046129b2695c))
+* run training twice with speed and memory profiling ([#89](https://github.com/zhixiangli/fast-bpe-rs/issues/89)) ([ef1ff22](https://github.com/zhixiangli/fast-bpe-rs/commit/ef1ff22e329685b535ea40ac2d7992a1760fe01d))
+* switch training chunk map to FxHasher ([#130](https://github.com/zhixiangli/fast-bpe-rs/issues/130)) ([d1df0bd](https://github.com/zhixiangli/fast-bpe-rs/commit/d1df0bdf35eb54dfa1d2e1860e17c11e35b5d245))
+* use FxHashMap for BPE state and reserve train capacities ([#124](https://github.com/zhixiangli/fast-bpe-rs/issues/124)) ([50602db](https://github.com/zhixiangli/fast-bpe-rs/commit/50602db8a82ccab6d249139461cbc98f59fac54a))
+* use hashmap buckets for token-pair frequency index ([#115](https://github.com/zhixiangli/fast-bpe-rs/issues/115)) ([85cdd5d](https://github.com/zhixiangli/fast-bpe-rs/commit/85cdd5dced887117fb4666149e3e7c3d5c360722))
+
 ## [0.4.5](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.4...v0.4.5) (2026-04-05)
 
 
