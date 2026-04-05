@@ -41,7 +41,7 @@ impl PyBPE {
         );
         self.inner
             .train(vocab_size, docs.iter().map(String::as_str));
-        log::debug!("python BPE training completed");
+        log::info!("python BPE training completed");
     }
 
     /// Encodes a string into token ids.

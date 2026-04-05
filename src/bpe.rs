@@ -12,6 +12,7 @@ use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::time::Instant;
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
 #[derive(Debug)]
@@ -585,6 +586,7 @@ impl BPE {
         vocab_size: TokenId,
         docs: impl IntoIterator<Item = impl Into<Cow<'a, str>>>,
     ) {
+        let train_started_at = Instant::now();
         self.reset_training_state();
         let target_vocab_size = vocab_size as usize;
         if target_vocab_size > self.vocab.len() {
@@ -645,6 +647,14 @@ impl BPE {
         }
 
         self.merge_sequences = merge_sequences;
+        let elapsed = train_started_at.elapsed();
+        log::info!(
+            "bpe.train completed vocab_size={} learned_merges={} elapsed_ms={} elapsed_s={:.3}",
+            vocab_size,
+            self.merge_map.len(),
+            elapsed.as_millis(),
+            elapsed.as_secs_f64()
+        );
     }
 
     /// Encodes text by repeatedly applying the currently available merge with the lowest token id.
