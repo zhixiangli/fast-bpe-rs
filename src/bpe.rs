@@ -792,7 +792,7 @@ mod tests {
             if let Segment::Regular(segment) = segment {
                 chunks.extend(
                     BPE::split_matches(&split_pattern, segment)
-                        .map(|matched| TrainingChunk::from_slice(matched.as_bytes())),
+                        .map(|matched| matched.as_bytes().to_vec().into_boxed_slice()),
                 );
             }
         });
@@ -836,10 +836,7 @@ mod tests {
             .expect("valid config should construct");
         let chunks = training_chunks(&bpe, "left<|eot|>right");
         assert_eq!(
-            chunks
-                .iter()
-                .map(TrainingChunk::as_slice)
-                .collect::<Vec<_>>(),
+            chunks.iter().map(Box::as_ref).collect::<Vec<_>>(),
             vec![b"left".as_slice(), b"right".as_slice()]
         );
     }
@@ -977,7 +974,7 @@ mod tests {
         assert_eq!(
             training_chunks(&bpe, "hi<pad><eos>there")
                 .iter()
-                .map(TrainingChunk::as_slice)
+                .map(Box::as_ref)
                 .collect::<Vec<_>>(),
             vec![b"hi".as_slice(), b"there".as_slice()]
         );
