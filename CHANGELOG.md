@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.3...v0.4.4) (2026-04-05)
+
+
+### Performance Improvements
+
+* batch merge-candidate bucket updates per selected merge ([#133](https://github.com/zhixiangli/fast-bpe-rs/issues/133)) ([878d714](https://github.com/zhixiangli/fast-bpe-rs/commit/878d714dcec297d82eaa42ed4763dce9d08e4733))
+
 ## [0.4.3](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.2...v0.4.3) (2026-04-05)
 
 
