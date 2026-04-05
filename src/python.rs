@@ -2,6 +2,7 @@ use crate::bpe::BPE;
 use crate::types::TokenId;
 use pyo3::exceptions::{PyUnicodeDecodeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedStr;
 use pyo3::types::PyBytes;
 use std::collections::HashMap;
 
@@ -10,6 +11,12 @@ use std::collections::HashMap;
 pub struct PyBPE {
     /// Pure-Rust implementation that does the actual work.
     inner: BPE,
+}
+
+impl PyBPE {
+    fn train_from_docs<'a>(&mut self, vocab_size: TokenId, docs: impl Iterator<Item = &'a str>) {
+        self.inner.train(vocab_size, docs);
+    }
 }
 
 #[pymethods]
@@ -26,10 +33,12 @@ impl PyBPE {
         Ok(Self { inner })
     }
 
-    /// Trains the model in place from a list of Python strings.
-    fn train(&mut self, vocab_size: TokenId, docs: Vec<String>) {
-        self.inner
-            .train(vocab_size, docs.iter().map(String::as_str));
+    /// Trains the model in place from Python strings without copying each document into Rust-owned `String`s.
+    ///
+    /// `PyBackedStr` keeps references to Python-owned immutable `str` objects so the Rust trainer can
+    /// read the corpus directly, then `detach` releases the GIL while heavy work runs in Rust.
+    fn train(&mut self, py: Python<'_>, vocab_size: TokenId, docs: Vec<PyBackedStr>) {
+        py.detach(|| self.train_from_docs(vocab_size, docs.iter().map(PyBackedStr::as_str)));
     }
 
     /// Encodes a string into token ids.
@@ -102,7 +111,7 @@ mod tests {
     #[test]
     fn python_wrapper_trains_encodes_and_decodes() {
         let mut bpe = PyBPE::py_new("(?s).+", None).expect("valid regex should construct");
-        bpe.train(257, vec!["abab".to_owned()]);
+        bpe.train_from_docs(257, ["abab"].into_iter());
 
         assert_eq!(bpe.encode("abab"), vec![256, 256]);
 
@@ -134,7 +143,7 @@ mod tests {
             ])),
         )
         .expect("valid regex should construct");
-        bpe.train(605, vec!["a<pad>a".to_owned()]);
+        bpe.train_from_docs(605, ["a<pad>a"].into_iter());
 
         assert_eq!(
             bpe.encode("a<pad><eos>a"),
@@ -151,7 +160,7 @@ mod tests {
     #[test]
     fn decode_to_string_surfaces_unicode_decode_errors() {
         let mut bpe = PyBPE::py_new("(?s).+", None).expect("valid regex should construct");
-        bpe.train(257, vec!["éa".to_owned()]);
+        bpe.train_from_docs(257, ["éa"].into_iter());
 
         prepare_python();
         Python::attach(|py| {
