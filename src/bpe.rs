@@ -2,8 +2,8 @@ use crate::error::BPEError;
 use crate::merge_candidate_buckets::MergeCandidateBuckets;
 use crate::merge_sequence::MergeSequence;
 use crate::types::{
-    BASE_VOCAB_SIZE, MergeNodeSlot, MergeSequenceIndex, SeedMap, TokenId, TokenIdPair,
-    TokenIdPairOccurrences, TrainingChunk,
+    BASE_VOCAB_SIZE, MergeNodeSlot, MergeSequenceIndex, SeedMap, SplitChunk, TokenId, TokenIdPair,
+    TokenIdPairOccurrences,
 };
 use fancy_regex::{Regex, escape};
 use hashbrown::{HashMap as HbHashMap, hash_map::EntryRef};
@@ -143,10 +143,7 @@ impl BPE {
         type FxBuildHasher = BuildHasherDefault<FxHasher>;
 
         #[inline]
-        fn count_chunk(
-            counts: &mut HbHashMap<TrainingChunk, u32, FxBuildHasher>,
-            chunk_bytes: &[u8],
-        ) {
+        fn count_chunk(counts: &mut HbHashMap<SplitChunk, u32, FxBuildHasher>, chunk_bytes: &[u8]) {
             match counts.entry_ref(chunk_bytes) {
                 EntryRef::Occupied(mut entry) => {
                     *entry.get_mut() += 1;
@@ -162,7 +159,7 @@ impl BPE {
             .fold(
                 || {
                     (
-                        HbHashMap::<TrainingChunk, u32, FxBuildHasher>::default(),
+                        HbHashMap::<SplitChunk, u32, FxBuildHasher>::default(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -203,7 +200,7 @@ impl BPE {
             .reduce(
                 || {
                     (
-                        HbHashMap::<TrainingChunk, u32, FxBuildHasher>::default(),
+                        HbHashMap::<SplitChunk, u32, FxBuildHasher>::default(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -783,7 +780,7 @@ impl Default for BPE {
 mod tests {
     use super::*;
 
-    fn training_chunks(bpe: &BPE, doc: &str) -> Vec<TrainingChunk> {
+    fn split_chunks(bpe: &BPE, doc: &str) -> Vec<SplitChunk> {
         let split_pattern =
             Regex::new(&bpe.split_pattern_source).expect("split regex source should remain valid");
         let special_split_pattern = bpe.special_split_pattern_source.as_ref().map(|pattern| {
@@ -836,7 +833,7 @@ mod tests {
     fn split_for_training_bytes_uses_special_tokens_as_boundaries() {
         let bpe = BPE::new(Some("(?s).+"), Some([("<|eot|>", BASE_VOCAB_SIZE)]))
             .expect("valid config should construct");
-        let chunks = training_chunks(&bpe, "left<|eot|>right");
+        let chunks = split_chunks(&bpe, "left<|eot|>right");
         assert_eq!(
             chunks.iter().map(Box::as_ref).collect::<Vec<_>>(),
             vec![b"left".as_slice(), b"right".as_slice()]
@@ -974,7 +971,7 @@ mod tests {
         let bpe = BPE::new(Some(r"\S+"), Some([("<pad>", 300), ("<eos>", 301)]))
             .expect("valid config should construct");
         assert_eq!(
-            training_chunks(&bpe, "hi<pad><eos>there")
+            split_chunks(&bpe, "hi<pad><eos>there")
                 .iter()
                 .map(Box::as_ref)
                 .collect::<Vec<_>>(),
