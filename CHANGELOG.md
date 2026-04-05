@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.0...v0.4.1) (2026-04-05)
+
+
+### Performance Improvements
+
+* use FxHashMap for BPE state and reserve train capacities ([#124](https://github.com/zhixiangli/fast-bpe-rs/issues/124)) ([50602db](https://github.com/zhixiangli/fast-bpe-rs/commit/50602db8a82ccab6d249139461cbc98f59fac54a))
+
 ## [0.4.0](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.3.4...v0.4.0) (2026-04-04)
 
 
