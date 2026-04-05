@@ -69,14 +69,12 @@ def load_wikitext_train_docs(dataset_config: str) -> tuple[list[str], int]:
 
 def main() -> None:
     logging.basicConfig(
-        level=logging.WARNING,
-        format="%(levelname)s:%(name)s:%(message)s",
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
         stream=sys.stdout,
         force=True,
     )
-    logging.getLogger("fast_bpe_rs.bpe").setLevel(logging.INFO)
     logger = logging.getLogger("python.train_wikitext")
-    logger.setLevel(logging.INFO)
     args = parse_args()
     docs, _ = load_wikitext_train_docs(args.dataset_config)
 
