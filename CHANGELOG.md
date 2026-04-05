@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.5](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.4...v0.4.5) (2026-04-05)
+
+
+### Bug Fixes
+
+* route WikiText training logs to stdout ([#135](https://github.com/zhixiangli/fast-bpe-rs/issues/135)) ([06d3bee](https://github.com/zhixiangli/fast-bpe-rs/commit/06d3bee239272a34b193d500dbd38933d1c44364))
+
 ## [0.4.4](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.3...v0.4.4) (2026-04-05)
 
 
