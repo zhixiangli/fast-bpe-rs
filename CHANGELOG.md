@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.1...v0.4.2) (2026-04-05)
+
+
+### Performance Improvements
+
+* log BPE training duration at info level ([#126](https://github.com/zhixiangli/fast-bpe-rs/issues/126)) ([d8ad9b6](https://github.com/zhixiangli/fast-bpe-rs/commit/d8ad9b62cba655cb48fc6bb4c054161e996c2b45))
+* make ensure_bucket logarithmic with ordered counts ([#127](https://github.com/zhixiangli/fast-bpe-rs/issues/127)) ([839f059](https://github.com/zhixiangli/fast-bpe-rs/commit/839f059113e41dce8de75e226624d13cf04630db))
+
 ## [0.4.1](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.4.0...v0.4.1) (2026-04-05)
 
 
