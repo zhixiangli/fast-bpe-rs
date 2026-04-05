@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 import time
 
 from datasets import load_dataset
@@ -66,6 +68,12 @@ def load_wikitext_train_docs(dataset_config: str) -> tuple[list[str], int]:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s:%(name)s:%(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
     args = parse_args()
     docs, total_rows = load_wikitext_train_docs(args.dataset_config)
     print(
