@@ -69,33 +69,30 @@ def load_wikitext_train_docs(dataset_config: str) -> tuple[list[str], int]:
 
 def main() -> None:
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(levelname)s:%(name)s:%(message)s",
         stream=sys.stdout,
         force=True,
     )
+    logging.getLogger("fast_bpe_rs.bpe").setLevel(logging.INFO)
+    logger = logging.getLogger("python.train_wikitext")
+    logger.setLevel(logging.INFO)
     args = parse_args()
-    docs, total_rows = load_wikitext_train_docs(args.dataset_config)
-    print(
-        "RUN_CONTEXT "
-        f"dataset_repo={DATASET_REPO} "
-        f"dataset_config={args.dataset_config} "
-        f"dataset_split={DATASET_SPLIT} "
-        f"split_rows={total_rows} "
-        f"docs_loaded={len(docs)} "
-        f"rows_filtered_out={total_rows - len(docs)} "
-        f"target_vocab_size={args.target_vocab_size} "
-        f"runs={args.runs}"
-    )
+    docs, _ = load_wikitext_train_docs(args.dataset_config)
 
     for run in range(1, args.runs + 1):
         bpe = BPE(REGEX)
         start_ns = time.perf_counter_ns()
         bpe.train(args.target_vocab_size, docs)
-        elapsed_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
-        print(f"TRAIN_RUN run={run} elapsed_ms={elapsed_ms}")
-
-    print("TRAINING_COMPLETE finished=true")
+        elapsed_ns = time.perf_counter_ns() - start_ns
+        logger.info(
+            "python.train_wikitext duration_ns=%s duration_ms=%s "
+            "duration_s=%.6f run=%s",
+            elapsed_ns,
+            elapsed_ns // 1_000_000,
+            elapsed_ns / 1_000_000_000,
+            run,
+        )
 
 
 if __name__ == "__main__":

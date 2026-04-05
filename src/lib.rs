@@ -17,9 +17,7 @@ use pyo3::prelude::*;
 #[pymodule]
 fn fast_bpe_rs(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = pyo3_log::try_init();
-    log::debug!("initialized python logging bridge");
     module.add_class::<PyBPE>()?;
-    log::info!("registered fast_bpe_rs.BPE python class");
     Ok(())
 }
 

@@ -686,11 +686,12 @@ impl BPE {
         self.merge_sequences = merge_sequences;
         let elapsed = train_started_at.elapsed();
         log::info!(
-            "bpe.train completed vocab_size={} learned_merges={} elapsed_ms={} elapsed_s={:.3}",
-            vocab_size,
-            self.merge_map.len(),
+            "bpe.train duration_ns={} duration_ms={} duration_s={:.6} vocab_size={} learned_merges={}",
+            elapsed.as_nanos(),
             elapsed.as_millis(),
-            elapsed.as_secs_f64()
+            elapsed.as_secs_f64(),
+            vocab_size,
+            self.merge_map.len()
         );
     }
 
