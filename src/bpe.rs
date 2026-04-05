@@ -5,13 +5,13 @@ use crate::types::{
     BASE_VOCAB_SIZE, MergeNodeSlot, MergeSequenceIndex, SeedMap, TokenId, TokenIdPair,
     TokenIdPairOccurrences, TrainingChunk,
 };
-use ahash::RandomState as AHashRandomState;
 use fancy_regex::{Regex, escape};
 use hashbrown::{HashMap as HbHashMap, hash_map::EntryRef};
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::hash::BuildHasherDefault;
 use std::time::Instant;
 
 /// One unique training chunk plus the number of corpus occurrences it represents.
@@ -140,9 +140,11 @@ impl BPE {
         &self,
         docs: impl IntoIterator<Item = impl Into<Cow<'a, str>>>,
     ) -> Vec<WeightedMergeSequence> {
+        type FxBuildHasher = BuildHasherDefault<FxHasher>;
+
         #[inline]
         fn count_chunk(
-            counts: &mut HbHashMap<TrainingChunk, u32, AHashRandomState>,
+            counts: &mut HbHashMap<TrainingChunk, u32, FxBuildHasher>,
             chunk_bytes: &[u8],
         ) {
             match counts.entry_ref(chunk_bytes) {
@@ -160,7 +162,7 @@ impl BPE {
             .fold(
                 || {
                     (
-                        HbHashMap::<TrainingChunk, u32, AHashRandomState>::default(),
+                        HbHashMap::<TrainingChunk, u32, FxBuildHasher>::default(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -201,7 +203,7 @@ impl BPE {
             .reduce(
                 || {
                     (
-                        HbHashMap::<TrainingChunk, u32, AHashRandomState>::default(),
+                        HbHashMap::<TrainingChunk, u32, FxBuildHasher>::default(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {

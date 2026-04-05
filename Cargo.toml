@@ -17,7 +17,6 @@ crate-type = ["rlib", "cdylib"]
 rayon = "1.11.0"
 fancy-regex = "0.17.0"
 pyo3 = { version = "0.28.3", features = ["abi3-py310"] }
-ahash = "0.8.12"
 hashbrown = "0.16.0"
 rustc-hash = "2.1.2"
 log = "0.4.29"
