@@ -2,8 +2,8 @@ use crate::bpe::BPE;
 use crate::types::TokenId;
 use pyo3::exceptions::{PyUnicodeDecodeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::pybacked::PyBackedStr;
-use pyo3::types::PyBytes;
+use pyo3::pybacked::PyBackedBytes;
+use pyo3::types::{PyBytes, PyString};
 use std::collections::HashMap;
 
 /// Thin PyO3 wrapper that exposes [`BPE`] to Python callers.
@@ -33,12 +33,30 @@ impl PyBPE {
         Ok(Self { inner })
     }
 
-    /// Trains the model in place from Python strings without copying each document into Rust-owned `String`s.
+    /// Trains the model in place from Python strings.
     ///
-    /// `PyBackedStr` keeps references to Python-owned immutable `str` objects so the Rust trainer can
-    /// read the corpus directly, then `detach` releases the GIL while heavy work runs in Rust.
-    fn train(&mut self, py: Python<'_>, vocab_size: TokenId, docs: Vec<PyBackedStr>) {
-        py.detach(|| self.train_from_docs(vocab_size, docs.iter().map(PyBackedStr::as_str)));
+    /// All docs are joined with a `\x00` sentinel and encoded to UTF-8 in a single Python C call,
+    /// then split in Rust without any per-document PyO3 overhead. This is substantially faster
+    /// than extracting N individual Python strings across the PyO3 boundary, because the entire
+    /// join + encode runs inside Python's own C runtime rather than crossing once per document.
+    fn train(&mut self, py: Python<'_>, vocab_size: TokenId, docs: Bound<'_, PyAny>) {
+        let sep = PyString::new(py, "\x00");
+        let joined_str = sep
+            .call_method1("join", (&docs,))
+            .expect("str.join on list[str] should not fail");
+        let joined_bytes = joined_str
+            .call_method0("encode")
+            .expect("str.encode() should not fail");
+        let backed: PyBackedBytes = joined_bytes
+            .extract()
+            .expect("str.encode() result should be bytes");
+
+        py.detach(|| {
+            let doc_iter = backed
+                .split(|&b| b == 0)
+                .map(|slice| std::str::from_utf8(slice).expect("docs are valid UTF-8"));
+            self.train_from_docs(vocab_size, doc_iter);
+        });
     }
 
     /// Encodes a string into token ids.
