@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.5.3...v0.6.0) (2026-04-07)
+
+
+### Features
+
+* add optional arrow zero-copy training support ([#147](https://github.com/zhixiangli/fast-bpe-rs/issues/147)) ([617dffe](https://github.com/zhixiangli/fast-bpe-rs/commit/617dffed41ab3cad18a5a3105c870b1ff24aefe2))
+
+
+### Performance Improvements
+
+* **python:** train wikitext via pyarrow pipeline ([#149](https://github.com/zhixiangli/fast-bpe-rs/issues/149)) ([90a317b](https://github.com/zhixiangli/fast-bpe-rs/commit/90a317bd7794cdae1930a0f0878861c4522f703f))
+
 ## [0.5.3](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.5.2...v0.5.3) (2026-04-07)
 
 
