@@ -6,6 +6,13 @@ use pyo3::pybacked::PyBackedStr;
 use pyo3::types::PyBytes;
 use std::collections::HashMap;
 
+#[cfg(feature = "arrow")]
+use arrow::array::{Array, ArrayRef, AsArray, make_array};
+#[cfg(feature = "arrow")]
+use arrow::datatypes::DataType;
+#[cfg(feature = "arrow")]
+use arrow::pyarrow::FromPyArrow;
+
 /// Thin PyO3 wrapper that exposes [`BPE`] to Python callers.
 #[pyclass(name = "BPE")]
 pub struct PyBPE {
@@ -17,6 +24,37 @@ impl PyBPE {
     fn train_from_docs<'a>(&mut self, vocab_size: TokenId, docs: impl Iterator<Item = &'a str>) {
         self.inner.train(vocab_size, docs);
     }
+}
+
+/// Pushes zero-copy `&str` references from an Arrow string array into `out`.
+///
+/// # Safety
+///
+/// The caller must ensure that `array` (and its underlying Arrow buffers) remains
+/// alive for as long as any reference in `out` is used. The raw-pointer reborrow
+/// decouples the `&str` lifetime from the intermediate downcast reference while
+/// the data itself lives in ref-counted Arrow buffers owned by the caller's `ArrayRef`.
+#[cfg(feature = "arrow")]
+unsafe fn push_arrow_strings(array: &dyn Array, out: &mut Vec<&str>) -> Result<(), String> {
+    macro_rules! collect_strings {
+        ($typed_array:expr) => {
+            for i in 0..$typed_array.len() {
+                if !$typed_array.is_null(i) {
+                    let s = $typed_array.value(i);
+                    // SAFETY: see function-level safety doc.
+                    out.push(unsafe { &*(s as *const str) });
+                }
+            }
+        };
+    }
+
+    match array.data_type() {
+        DataType::Utf8 => collect_strings!(array.as_string::<i32>()),
+        DataType::LargeUtf8 => collect_strings!(array.as_string::<i64>()),
+        DataType::Utf8View => collect_strings!(array.as_string_view()),
+        other => return Err(format!("expected a string array, got {other}")),
+    }
+    Ok(())
 }
 
 #[pymethods]
@@ -39,6 +77,48 @@ impl PyBPE {
     /// read the corpus directly, then `detach` releases the GIL while heavy work runs in Rust.
     fn train(&mut self, py: Python<'_>, vocab_size: TokenId, docs: Vec<PyBackedStr>) {
         py.detach(|| self.train_from_docs(vocab_size, docs.iter().map(PyBackedStr::as_str)));
+    }
+
+    /// Trains the model from a PyArrow `Array` or `ChunkedArray` of strings.
+    ///
+    /// Arrow buffers are accessed with zero copy — gigabytes of text pass from
+    /// Python to Rust without serialisation or duplication.
+    #[cfg(feature = "arrow")]
+    fn train_arrow(
+        &mut self,
+        py: Python<'_>,
+        vocab_size: TokenId,
+        arrow_data: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        // Extract ArrayRef(s) from PyArrow Array or ChunkedArray.
+        let arrays: Vec<ArrayRef> = if arrow_data.hasattr("chunks")? {
+            let py_chunks = arrow_data.getattr("chunks")?;
+            let n: usize = py_chunks.len()?;
+            let mut v = Vec::with_capacity(n);
+            for i in 0..n {
+                let data = arrow::array::ArrayData::from_pyarrow_bound(&py_chunks.get_item(i)?)?;
+                v.push(make_array(data));
+            }
+            v
+        } else {
+            let data = arrow::array::ArrayData::from_pyarrow_bound(arrow_data)?;
+            vec![make_array(data)]
+        };
+
+        // Collect zero-copy &str references from all Arrow buffers.
+        let total_len: usize = arrays.iter().map(|a| a.len()).sum();
+        let mut docs: Vec<&str> = Vec::with_capacity(total_len);
+        for array in &arrays {
+            // SAFETY: Each &str points into Arrow buffer memory owned by the
+            // ArrayRef (Arc) in `arrays`. `arrays` is not dropped until after
+            // `docs` is fully consumed inside `py.detach`, so all references
+            // remain valid.
+            unsafe { push_arrow_strings(array.as_ref(), &mut docs) }
+                .map_err(PyValueError::new_err)?;
+        }
+
+        py.detach(|| self.inner.train(vocab_size, docs));
+        Ok(())
     }
 
     /// Encodes a string into token ids.

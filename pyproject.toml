@@ -28,10 +28,12 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+arrow = ["pyarrow>=14.0"]
 dev = [
   "datasets>=2.0",
   "maturin>=1.12,<2.0",
   "pre-commit>=4.2",
+  "pyarrow>=14.0",
   "pytest>=9.0",
   "ruff>=0.15.9",
   "tiktoken>=0.12",
@@ -40,7 +42,7 @@ dev = [
 
 [tool.maturin]
 module-name = "fast_bpe_rs"
-features = ["pyo3/extension-module", "pyo3/abi3-py310"]
+features = ["pyo3/extension-module", "pyo3/abi3-py310", "arrow"]
 sdist-generator = "git"
 
 [tool.pytest.ini_options]
