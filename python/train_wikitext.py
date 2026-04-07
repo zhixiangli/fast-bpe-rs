@@ -7,7 +7,6 @@ import logging
 import sys
 import time
 
-import pyarrow.compute as pc
 from datasets import load_dataset
 from fast_bpe_rs import BPE
 
@@ -59,9 +58,7 @@ def load_wikitext_arrow(dataset_config: str):
     """Load WikiText and return a PyArrow ChunkedArray of non-empty stripped texts."""
     dataset = load_dataset(DATASET_REPO, dataset_config, split="train")
     col = dataset.data.column("text")
-    stripped = pc.utf8_trim_whitespace(col)
-    mask = pc.greater(pc.utf8_length(stripped), 0)
-    return pc.filter(stripped, mask)
+    return col
 
 
 def main() -> None:
