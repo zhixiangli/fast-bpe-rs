@@ -53,3 +53,15 @@ def test_python_decode_to_string_invalid_utf8_raises_unicode_decode_error() -> N
     assert err.start == 0
     assert err.end == 1
     assert err.reason == "invalid utf-8"
+
+
+def test_python_can_train_from_pyarrow_string_array() -> None:
+    pyarrow = pytest.importorskip("pyarrow")
+
+    docs = pyarrow.array(["banana banana", None, "banana"], type=pyarrow.string())
+    bpe = BPE(r"(?s).+")
+    bpe.train_arrow(258, docs)
+
+    encoded = bpe.encode("banana banana")
+    assert encoded
+    assert any(token > 255 for token in encoded)

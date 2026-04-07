@@ -1,5 +1,8 @@
 use crate::bpe::BPE;
 use crate::types::TokenId;
+use arrow::array::{Array, LargeStringArray, StringArray, make_array};
+use arrow::datatypes::DataType;
+use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema, from_ffi};
 use pyo3::exceptions::{PyUnicodeDecodeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
@@ -16,6 +19,51 @@ pub struct PyBPE {
 impl PyBPE {
     fn train_from_docs<'a>(&mut self, vocab_size: TokenId, docs: impl Iterator<Item = &'a str>) {
         self.inner.train(vocab_size, docs);
+    }
+
+    fn train_from_arrow_array(
+        &mut self,
+        py: Python<'_>,
+        vocab_size: TokenId,
+        docs: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let mut ffi_array = FFI_ArrowArray::empty();
+        let mut ffi_schema = FFI_ArrowSchema::empty();
+        docs.call_method1(
+            "_export_to_c",
+            (
+                &mut ffi_array as *mut FFI_ArrowArray as usize,
+                &mut ffi_schema as *mut FFI_ArrowSchema as usize,
+            ),
+        )?;
+        let field = unsafe { from_ffi(ffi_array, &ffi_schema) }.map_err(|err| {
+            PyValueError::new_err(format!("failed to import pyarrow string array: {err}"))
+        })?;
+        let array = make_array(field);
+
+        match array.data_type() {
+            DataType::Utf8 => {
+                let Some(string_array) = array.as_any().downcast_ref::<StringArray>() else {
+                    return Err(PyValueError::new_err(
+                        "expected a pyarrow utf8 array for training docs",
+                    ));
+                };
+                py.detach(|| self.train_from_docs(vocab_size, string_array.iter().flatten()));
+                Ok(())
+            }
+            DataType::LargeUtf8 => {
+                let Some(string_array) = array.as_any().downcast_ref::<LargeStringArray>() else {
+                    return Err(PyValueError::new_err(
+                        "expected a pyarrow large_utf8 array for training docs",
+                    ));
+                };
+                py.detach(|| self.train_from_docs(vocab_size, string_array.iter().flatten()));
+                Ok(())
+            }
+            other => Err(PyValueError::new_err(format!(
+                "expected a pyarrow string array for training docs, got {other:?}",
+            ))),
+        }
     }
 }
 
@@ -39,6 +87,16 @@ impl PyBPE {
     /// read the corpus directly, then `detach` releases the GIL while heavy work runs in Rust.
     fn train(&mut self, py: Python<'_>, vocab_size: TokenId, docs: Vec<PyBackedStr>) {
         py.detach(|| self.train_from_docs(vocab_size, docs.iter().map(PyBackedStr::as_str)));
+    }
+
+    /// Trains the model from a `pyarrow.Array` (utf8 / large_utf8) via Arrow C Data Interface buffers.
+    fn train_arrow(
+        &mut self,
+        py: Python<'_>,
+        vocab_size: TokenId,
+        docs: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.train_from_arrow_array(py, vocab_size, &docs)
     }
 
     /// Encodes a string into token ids.

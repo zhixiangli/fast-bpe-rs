@@ -60,11 +60,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_wikitext_train_docs(dataset_config: str) -> tuple[list[str], int]:
-    dataset = load_dataset(DATASET_REPO, dataset_config, split=DATASET_SPLIT)
-    total_rows = len(dataset)
-    docs = [text.strip() for text in dataset["text"] if text and text.strip()]
-    return docs, total_rows
+def load_wikitext_train_docs(dataset_config: str):
+    dataset = load_dataset(
+        DATASET_REPO,
+        dataset_config,
+        split=DATASET_SPLIT,
+    ).with_format("arrow")
+    table = dataset.data.table if hasattr(dataset.data, "table") else dataset.data
+    text_array = table.column("text").combine_chunks()
+    return text_array
 
 
 def main() -> None:
@@ -76,12 +80,12 @@ def main() -> None:
     )
     logger = logging.getLogger("python.train_wikitext")
     args = parse_args()
-    docs, _ = load_wikitext_train_docs(args.dataset_config)
+    docs = load_wikitext_train_docs(args.dataset_config)
 
     for run in range(1, args.runs + 1):
         bpe = BPE(REGEX)
         start_ns = time.perf_counter_ns()
-        bpe.train(args.target_vocab_size, docs)
+        bpe.train_arrow(args.target_vocab_size, docs)
         elapsed_ns = time.perf_counter_ns() - start_ns
         logger.info(
             "python.train_wikitext duration_ns=%s duration_ms=%s "
