@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "fast-bpe-rs"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "fancy-regex",
  "hashbrown",
