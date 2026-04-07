@@ -1,4 +1,4 @@
-"""Train fast_bpe_rs on WikiText with Hugging Face datasets."""
+"""Train fast_bpe_rs on supported Hugging Face datasets."""
 
 from __future__ import annotations
 
@@ -6,13 +6,31 @@ import argparse
 import logging
 import sys
 import time
+from dataclasses import dataclass
 
 from datasets import load_dataset
 from fast_bpe_rs import BPE
 
-DATASET_REPO = "Salesforce/wikitext"
-DEFAULT_DATASET_CONFIG = "wikitext-103-raw-v1"
-SUPPORTED_DATASET_CONFIGS = ("wikitext-103-raw-v1", "wikitext-2-raw-v1")
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    repo: str
+    config: str | None = None
+    split: str = "train"
+
+
+DATASET_SPECS = {
+    "wikitext-103-raw-v1": DatasetSpec(
+        repo="Salesforce/wikitext",
+        config="wikitext-103-raw-v1",
+    ),
+    "wikitext-2-raw-v1": DatasetSpec(
+        repo="Salesforce/wikitext",
+        config="wikitext-2-raw-v1",
+    ),
+    "tinystories": DatasetSpec(repo="roneneldan/TinyStories"),
+}
+DEFAULT_DATASET = "wikitext-103-raw-v1"
 DEFAULT_TARGET_VOCAB_SIZE = 1 << 15
 DEFAULT_RUNS = 3
 
@@ -25,19 +43,23 @@ REGEX = (
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be a positive integer")
+        msg = "value must be a positive integer"
+        raise argparse.ArgumentTypeError(msg)
     return parsed
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train fast_bpe_rs on the WikiText train split and print timing."
+        description=(
+            "Train fast_bpe_rs on a supported Hugging Face dataset train split "
+            "and print timing."
+        )
     )
     parser.add_argument(
-        "--dataset-config",
-        choices=SUPPORTED_DATASET_CONFIGS,
-        default=DEFAULT_DATASET_CONFIG,
-        help=f"WikiText dataset config (default: {DEFAULT_DATASET_CONFIG}).",
+        "--dataset",
+        choices=tuple(DATASET_SPECS),
+        default=DEFAULT_DATASET,
+        help=f"Dataset key (default: {DEFAULT_DATASET}).",
     )
     parser.add_argument(
         "--target-vocab-size",
@@ -54,11 +76,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_wikitext_arrow(dataset_config: str):
-    """Load WikiText and return a PyArrow ChunkedArray of non-empty stripped texts."""
-    dataset = load_dataset(DATASET_REPO, dataset_config, split="train")
-    col = dataset.data.column("text")
-    return col
+def load_text_column(dataset: str):
+    """Load text column as a PyArrow ChunkedArray from dataset train split."""
+    spec = DATASET_SPECS[dataset]
+    dataset_split = load_dataset(spec.repo, spec.config, split=spec.split)
+    return dataset_split.data.column("text")
 
 
 def main() -> None:
@@ -68,9 +90,9 @@ def main() -> None:
         stream=sys.stdout,
         force=True,
     )
-    logger = logging.getLogger("python.train_wikitext")
+    logger = logging.getLogger("python.train_hf_dataset")
     args = parse_args()
-    docs = load_wikitext_arrow(args.dataset_config)
+    docs = load_text_column(args.dataset)
 
     for run in range(1, args.runs + 1):
         bpe = BPE(REGEX)
@@ -78,8 +100,9 @@ def main() -> None:
         bpe.train_arrow(args.target_vocab_size, docs)
         elapsed_ns = time.perf_counter_ns() - start_ns
         logger.info(
-            "python.train_wikitext duration_ns=%s duration_ms=%s "
+            "python.train_hf_dataset dataset=%s duration_ns=%s duration_ms=%s "
             "duration_s=%.6f run=%s",
+            args.dataset,
             elapsed_ns,
             elapsed_ns // 1_000_000,
             elapsed_ns / 1_000_000_000,
