@@ -13,6 +13,10 @@ categories = ["algorithms", "text-processing"]
 name = "fast_bpe_rs"
 crate-type = ["rlib", "cdylib"]
 
+[features]
+default = []
+arrow = ["dep:arrow"]
+
 [dependencies]
 rayon = "1.11.0"
 fancy-regex = "0.17.0"
@@ -22,6 +26,7 @@ rustc-hash = "2.1.2"
 log = "0.4.29"
 pyo3-log = "0.13.3"
 mimalloc = { version = "0.1.46", default-features = false }
+arrow = { version = "58", default-features = false, features = ["pyarrow"], optional = true }
 
 [profile.release]
 lto = "fat"
