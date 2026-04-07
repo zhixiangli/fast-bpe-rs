@@ -7,13 +7,13 @@ import logging
 import sys
 import time
 
+import pyarrow.compute as pc
 from datasets import load_dataset
 from fast_bpe_rs import BPE
 
 DATASET_REPO = "Salesforce/wikitext"
 DEFAULT_DATASET_CONFIG = "wikitext-103-raw-v1"
 SUPPORTED_DATASET_CONFIGS = ("wikitext-103-raw-v1", "wikitext-2-raw-v1")
-DATASET_SPLIT = "train"
 DEFAULT_TARGET_VOCAB_SIZE = 1 << 15
 DEFAULT_RUNS = 3
 
@@ -38,33 +38,30 @@ def parse_args() -> argparse.Namespace:
         "--dataset-config",
         choices=SUPPORTED_DATASET_CONFIGS,
         default=DEFAULT_DATASET_CONFIG,
-        help=(
-            f"WikiText dataset config to train on (default: {DEFAULT_DATASET_CONFIG})."
-        ),
+        help=f"WikiText dataset config (default: {DEFAULT_DATASET_CONFIG}).",
     )
     parser.add_argument(
         "--target-vocab-size",
         type=positive_int,
         default=DEFAULT_TARGET_VOCAB_SIZE,
-        help=(
-            "Target vocabulary size for BPE training "
-            f"(default: {DEFAULT_TARGET_VOCAB_SIZE})."
-        ),
+        help=f"Target vocabulary size (default: {DEFAULT_TARGET_VOCAB_SIZE}).",
     )
     parser.add_argument(
         "--runs",
         type=positive_int,
         default=DEFAULT_RUNS,
-        help=f"Number of training runs to execute (default: {DEFAULT_RUNS}).",
+        help=f"Number of training runs (default: {DEFAULT_RUNS}).",
     )
     return parser.parse_args()
 
 
-def load_wikitext_train_docs(dataset_config: str) -> tuple[list[str], int]:
-    dataset = load_dataset(DATASET_REPO, dataset_config, split=DATASET_SPLIT)
-    total_rows = len(dataset)
-    docs = [text.strip() for text in dataset["text"] if text and text.strip()]
-    return docs, total_rows
+def load_wikitext_arrow(dataset_config: str):
+    """Load WikiText and return a PyArrow ChunkedArray of non-empty stripped texts."""
+    dataset = load_dataset(DATASET_REPO, dataset_config, split="train")
+    col = dataset.data.column("text")
+    stripped = pc.utf8_trim_whitespace(col)
+    mask = pc.greater(pc.utf8_length(stripped), 0)
+    return pc.filter(stripped, mask)
 
 
 def main() -> None:
@@ -76,12 +73,12 @@ def main() -> None:
     )
     logger = logging.getLogger("python.train_wikitext")
     args = parse_args()
-    docs, _ = load_wikitext_train_docs(args.dataset_config)
+    docs = load_wikitext_arrow(args.dataset_config)
 
     for run in range(1, args.runs + 1):
         bpe = BPE(REGEX)
         start_ns = time.perf_counter_ns()
-        bpe.train(args.target_vocab_size, docs)
+        bpe.train_arrow(args.target_vocab_size, docs)
         elapsed_ns = time.perf_counter_ns() - start_ns
         logger.info(
             "python.train_wikitext duration_ns=%s duration_ms=%s "
