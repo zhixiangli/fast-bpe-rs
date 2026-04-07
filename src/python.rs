@@ -85,18 +85,22 @@ impl PyBPE {
     ///
     /// `PyBackedStr` keeps references to Python-owned immutable `str` objects so the Rust trainer can
     /// read the corpus directly, then `detach` releases the GIL while heavy work runs in Rust.
-    fn train(&mut self, py: Python<'_>, vocab_size: TokenId, docs: Vec<PyBackedStr>) {
-        py.detach(|| self.train_from_docs(vocab_size, docs.iter().map(PyBackedStr::as_str)));
-    }
-
-    /// Trains the model from a `pyarrow.Array` (utf8 / large_utf8) via Arrow C Data Interface buffers.
-    fn train_arrow(
+    ///
+    /// This API also accepts `pyarrow.Array` values (utf8 / large_utf8) and imports Arrow buffers
+    /// through the Arrow C Data Interface.
+    fn train(
         &mut self,
         py: Python<'_>,
         vocab_size: TokenId,
         docs: Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        self.train_from_arrow_array(py, vocab_size, &docs)
+        if docs.hasattr("_export_to_c")? {
+            return self.train_from_arrow_array(py, vocab_size, &docs);
+        }
+
+        let docs: Vec<PyBackedStr> = docs.extract()?;
+        py.detach(|| self.train_from_docs(vocab_size, docs.iter().map(PyBackedStr::as_str)));
+        Ok(())
     }
 
     /// Encodes a string into token ids.

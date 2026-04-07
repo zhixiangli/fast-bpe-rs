@@ -85,7 +85,7 @@ def main() -> None:
     for run in range(1, args.runs + 1):
         bpe = BPE(REGEX)
         start_ns = time.perf_counter_ns()
-        bpe.train_arrow(args.target_vocab_size, docs)
+        bpe.train(args.target_vocab_size, docs)
         elapsed_ns = time.perf_counter_ns() - start_ns
         logger.info(
             "python.train_wikitext duration_ns=%s duration_ms=%s "

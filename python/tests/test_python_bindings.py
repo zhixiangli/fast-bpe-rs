@@ -60,7 +60,7 @@ def test_python_can_train_from_pyarrow_string_array() -> None:
 
     docs = pyarrow.array(["banana banana", None, "banana"], type=pyarrow.string())
     bpe = BPE(r"(?s).+")
-    bpe.train_arrow(258, docs)
+    bpe.train(258, docs)
 
     encoded = bpe.encode("banana banana")
     assert encoded
