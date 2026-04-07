@@ -26,37 +26,6 @@ impl PyBPE {
     }
 }
 
-/// Pushes zero-copy `&str` references from an Arrow string array into `out`.
-///
-/// # Safety
-///
-/// The caller must ensure that `array` (and its underlying Arrow buffers) remains
-/// alive for as long as any reference in `out` is used. The raw-pointer reborrow
-/// decouples the `&str` lifetime from the intermediate downcast reference while
-/// the data itself lives in ref-counted Arrow buffers owned by the caller's `ArrayRef`.
-#[cfg(feature = "arrow")]
-unsafe fn push_arrow_strings(array: &dyn Array, out: &mut Vec<&str>) -> Result<(), String> {
-    macro_rules! collect_strings {
-        ($typed_array:expr) => {
-            for i in 0..$typed_array.len() {
-                if !$typed_array.is_null(i) {
-                    let s = $typed_array.value(i);
-                    // SAFETY: see function-level safety doc.
-                    out.push(unsafe { &*(s as *const str) });
-                }
-            }
-        };
-    }
-
-    match array.data_type() {
-        DataType::Utf8 => collect_strings!(array.as_string::<i32>()),
-        DataType::LargeUtf8 => collect_strings!(array.as_string::<i64>()),
-        DataType::Utf8View => collect_strings!(array.as_string_view()),
-        other => return Err(format!("expected a string array, got {other}")),
-    }
-    Ok(())
-}
-
 #[pymethods]
 impl PyBPE {
     /// Creates a Python-facing BPE model and translates construction errors into `ValueError`.
@@ -105,19 +74,36 @@ impl PyBPE {
             vec![make_array(data)]
         };
 
-        // Collect zero-copy &str references from all Arrow buffers.
-        let total_len: usize = arrays.iter().map(|a| a.len()).sum();
-        let mut docs: Vec<&str> = Vec::with_capacity(total_len);
+        // Validate data types BEFORE dropping the GIL, so we can return a Python exception.
         for array in &arrays {
-            // SAFETY: Each &str points into Arrow buffer memory owned by the
-            // ArrayRef (Arc) in `arrays`. `arrays` is not dropped until after
-            // `docs` is fully consumed inside `py.detach`, so all references
-            // remain valid.
-            unsafe { push_arrow_strings(array.as_ref(), &mut docs) }
-                .map_err(PyValueError::new_err)?;
+            match array.data_type() {
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {}
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "expected a string array, got {other}"
+                    )));
+                }
+            }
         }
 
-        py.detach(|| self.inner.train(vocab_size, docs));
+        // Move the `ArrayRef`s into the detached thread and build a lazy iterator.
+        py.detach(move || {
+            let docs = arrays
+                .iter()
+                .flat_map(|array| -> Box<dyn Iterator<Item = &str>> {
+                    // .iter() yields Option<&str>, and .flatten() seamlessly skips the nulls.
+                    let non_null: Box<dyn Iterator<Item = &str>> = match array.data_type() {
+                        DataType::Utf8 => Box::new(array.as_string::<i32>().iter().flatten()),
+                        DataType::LargeUtf8 => Box::new(array.as_string::<i64>().iter().flatten()),
+                        DataType::Utf8View => Box::new(array.as_string_view().iter().flatten()),
+                        _ => unreachable!("Array types were pre-validated"),
+                    };
+                    Box::new(non_null.filter(|s| !s.trim().is_empty()))
+                });
+
+            self.inner.train(vocab_size, docs);
+        });
+
         Ok(())
     }
 
