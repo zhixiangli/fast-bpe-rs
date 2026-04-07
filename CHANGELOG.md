@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.5.2...v0.5.3) (2026-04-07)
+
+
+### Performance Improvements
+
+* **python:** batch train docs conversion across PyO3 boundary ([#143](https://github.com/zhixiangli/fast-bpe-rs/issues/143)) ([bbe904c](https://github.com/zhixiangli/fast-bpe-rs/commit/bbe904ccb8f7a0d2b72cf088003b8db6b9bf2ac1))
+
 ## [0.5.2](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.5.1...v0.5.2) (2026-04-05)
 
 
