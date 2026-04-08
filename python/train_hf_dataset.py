@@ -100,11 +100,8 @@ def main() -> None:
         bpe.train_arrow(args.target_vocab_size, docs)
         elapsed_ns = time.perf_counter_ns() - start_ns
         logger.info(
-            "python.train_hf_dataset dataset=%s duration_ns=%s duration_ms=%s "
-            "duration_s=%.6f run=%s",
+            "python.train_hf_dataset dataset=%s duration_s=%.6f run=%s",
             args.dataset,
-            elapsed_ns,
-            elapsed_ns // 1_000_000,
             elapsed_ns / 1_000_000_000,
             run,
         )

@@ -686,9 +686,7 @@ impl BPE {
         self.merge_sequences = merge_sequences;
         let elapsed = train_started_at.elapsed();
         log::info!(
-            "rust.bpe.train duration_ns={} duration_ms={} duration_s={:.6} vocab_size={} learned_merges={}",
-            elapsed.as_nanos(),
-            elapsed.as_millis(),
+            "rust.bpe.train duration_s={:.6} vocab_size={} learned_merges={}",
             elapsed.as_secs_f64(),
             vocab_size,
             self.merge_map.len()
