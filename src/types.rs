@@ -13,5 +13,3 @@ pub(crate) type MergeSequenceIndex = usize;
 pub(crate) type TokenIdPairOccurrences = rustc_hash::FxHashSet<(MergeSequenceIndex, MergeNodeSlot)>;
 /// Fast hash map used for pair-keyed training indexes.
 pub(crate) type SeedMap<V> = rustc_hash::FxHashMap<TokenIdPair, V>;
-/// Byte chunk representation used while splitting and aggregating training corpora.
-pub(crate) type SplitChunk = Box<[u8]>;

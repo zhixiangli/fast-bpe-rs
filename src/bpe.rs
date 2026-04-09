@@ -2,11 +2,11 @@ use crate::error::BPEError;
 use crate::merge_candidate_buckets::MergeCandidateBuckets;
 use crate::merge_sequence::MergeSequence;
 use crate::types::{
-    BASE_VOCAB_SIZE, MergeNodeSlot, MergeSequenceIndex, SeedMap, SplitChunk, TokenId, TokenIdPair,
+    BASE_VOCAB_SIZE, MergeNodeSlot, MergeSequenceIndex, SeedMap, TokenId, TokenIdPair,
     TokenIdPairOccurrences,
 };
 use fancy_regex::{Regex, escape};
-use hashbrown::{HashMap as HbHashMap, hash_map::EntryRef};
+use hashbrown::HashMap as HbHashMap;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHasher};
 use std::borrow::Cow;
@@ -146,17 +146,14 @@ impl BPE {
         docs: impl IntoIterator<Item = impl Into<Cow<'a, str>>>,
     ) -> Vec<WeightedMergeSequence> {
         type FxBuildHasher = BuildHasherDefault<FxHasher>;
+        type BorrowedSplitChunk<'doc> = &'doc [u8];
 
         #[inline]
-        fn count_chunk(counts: &mut HbHashMap<SplitChunk, u32, FxBuildHasher>, chunk_bytes: &[u8]) {
-            match counts.entry_ref(chunk_bytes) {
-                EntryRef::Occupied(mut entry) => {
-                    *entry.get_mut() += 1;
-                }
-                EntryRef::Vacant(entry) => {
-                    entry.insert(1);
-                }
-            }
+        fn count_chunk<'doc>(
+            counts: &mut HbHashMap<BorrowedSplitChunk<'doc>, u32, FxBuildHasher>,
+            chunk_bytes: BorrowedSplitChunk<'doc>,
+        ) {
+            *counts.entry(chunk_bytes).or_default() += 1;
         }
 
         let docs: Vec<Cow<'a, str>> = docs.into_iter().map(Into::into).collect();
@@ -164,7 +161,7 @@ impl BPE {
             .fold(
                 || {
                     (
-                        HbHashMap::<SplitChunk, u32, FxBuildHasher>::default(),
+                        HbHashMap::<BorrowedSplitChunk<'_>, u32, FxBuildHasher>::default(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -205,7 +202,7 @@ impl BPE {
             .reduce(
                 || {
                     (
-                        HbHashMap::<SplitChunk, u32, FxBuildHasher>::default(),
+                        HbHashMap::<BorrowedSplitChunk<'_>, u32, FxBuildHasher>::default(),
                         Regex::new(&self.split_pattern_source)
                             .expect("split regex source should remain valid"),
                         self.special_split_pattern_source.as_ref().map(|pattern| {
@@ -229,7 +226,7 @@ impl BPE {
             .0
             .into_iter()
             .map(|(chunk, frequency)| WeightedMergeSequence {
-                merge_sequence: MergeSequence::new(&chunk),
+                merge_sequence: MergeSequence::new(chunk),
                 frequency,
             })
             .collect()
@@ -817,7 +814,7 @@ impl Default for BPE {
 mod tests {
     use super::*;
 
-    fn split_chunks(bpe: &BPE, doc: &str) -> Vec<SplitChunk> {
+    fn split_chunks(bpe: &BPE, doc: &str) -> Vec<Box<[u8]>> {
         let split_pattern =
             Regex::new(&bpe.split_pattern_source).expect("split regex source should remain valid");
         let special_split_pattern = bpe.special_split_pattern_source.as_ref().map(|pattern| {
