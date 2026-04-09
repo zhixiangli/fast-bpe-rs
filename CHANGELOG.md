@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.6.0...v0.6.1) (2026-04-09)
+
+
+### Performance Improvements
+
+* use borrowed split-chunk keys during training aggregation ([#155](https://github.com/zhixiangli/fast-bpe-rs/issues/155)) ([5443b8f](https://github.com/zhixiangli/fast-bpe-rs/commit/5443b8fc676417f399838eed5230df783836a0f6))
+
 ## [0.6.0](https://github.com/zhixiangli/fast-bpe-rs/compare/v0.5.3...v0.6.0) (2026-04-07)
 
 
