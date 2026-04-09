@@ -226,7 +226,7 @@ impl BPE {
             .0
             .into_iter()
             .map(|(chunk, frequency)| WeightedMergeSequence {
-                merge_sequence: MergeSequence::new(&chunk),
+                merge_sequence: MergeSequence::new(chunk),
                 frequency,
             })
             .collect()
