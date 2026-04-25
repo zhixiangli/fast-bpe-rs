@@ -19,7 +19,7 @@ arrow = ["dep:arrow"]
 
 [dependencies]
 rayon = "1.12.0"
-fancy-regex = "0.17.0"
+fancy-regex = "0.18.0"
 pyo3 = { version = "0.28.3", features = ["abi3-py310"] }
 hashbrown = "0.17.0"
 rustc-hash = "2.1.2"
