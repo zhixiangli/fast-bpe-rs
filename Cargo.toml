@@ -21,7 +21,7 @@ arrow = ["dep:arrow"]
 rayon = "1.12.0"
 fancy-regex = "0.18.0"
 pyo3 = { version = "0.28.3", features = ["abi3-py310"] }
-hashbrown = "0.17.0"
+hashbrown = "0.17.1"
 rustc-hash = "2.1.2"
 log = "0.4.29"
 pyo3-log = "0.13.3"
